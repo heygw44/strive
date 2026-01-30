@@ -16,6 +16,7 @@ public enum ErrorCode {
     INVALID_PASSWORD_LENGTH("AUTH-400-PASSWORD", "비밀번호는 10자 이상이어야 합니다", HttpStatus.BAD_REQUEST),
     EMAIL_ALREADY_VERIFIED("AUTH-409-VERIFIED", "이미 인증된 이메일입니다", HttpStatus.CONFLICT),
     VERIFICATION_TOKEN_INVALID("AUTH-400-TOKEN", "유효하지 않거나 만료된 인증 토큰입니다", HttpStatus.BAD_REQUEST),
+    SESSION_LIMIT_EXCEEDED("AUTH-409-SESSION", "동시 로그인 제한을 초과했습니다", HttpStatus.CONFLICT),
 
     // Meetup
     MEETUP_INVALID_STATE("MEETUP-409-STATE", "허용되지 않는 모임 상태입니다", HttpStatus.CONFLICT),
