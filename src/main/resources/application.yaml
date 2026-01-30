@@ -1,0 +1,22 @@
+spring:
+  application:
+    name: strive
+  profiles:
+    default: local
+  jackson:
+    time-zone: UTC
+    serialization:
+      write-dates-as-timestamps: false
+  jpa:
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+
+logging:
+  level:
+    root: INFO
+
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
