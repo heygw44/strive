@@ -67,10 +67,18 @@ public class User {
         if (nickname != null) {
             this.nickname = nickname;
         }
-        this.bioText = bioText;
-        this.preferredCategories = preferredCategories;
-        this.homeRegionCode = homeRegionCode;
-        this.experienceLevel = experienceLevel;
+        if (bioText != null) {
+            this.bioText = bioText;
+        }
+        if (preferredCategories != null) {
+            this.preferredCategories = preferredCategories;
+        }
+        if (homeRegionCode != null) {
+            this.homeRegionCode = homeRegionCode;
+        }
+        if (experienceLevel != null) {
+            this.experienceLevel = experienceLevel;
+        }
         this.updatedAt = LocalDateTime.now();
     }
 

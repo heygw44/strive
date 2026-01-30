@@ -167,6 +167,25 @@ class AuthIntegrationTest {
             // 세션 ID가 달라야 함
             assertThat(secondSessionId).isNotEqualTo(firstSessionId);
         }
+
+        @Test
+        @DisplayName("기존 세션이 있어도 로그인 시 세션 ID가 변경됨")
+        void login_withExistingSession_regeneratesSession() throws Exception {
+            MockHttpSession existingSession = new MockHttpSession();
+            String existingSessionId = existingSession.getId();
+
+            LoginRequest request = new LoginRequest("test@example.com", "password123");
+            MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                            .session(existingSession)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(request)))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            MockHttpSession newSession = (MockHttpSession) loginResult.getRequest().getSession(false);
+            assertThat(newSession).isNotNull();
+            assertThat(newSession.getId()).isNotEqualTo(existingSessionId);
+        }
     }
 
     @Nested
@@ -208,6 +227,32 @@ class AuthIntegrationTest {
                             .session(session)
                             .with(csrf()))
                     .andExpect(status().isOk());
+        }
+    }
+
+    @Nested
+    @DisplayName("이메일 인증 토큰 형식 검증")
+    class EmailVerificationTokenFormatTest {
+
+        @Test
+        @DisplayName("잘못된 토큰 형식이면 400 반환")
+        void confirmEmail_withInvalidTokenFormat_returns400() throws Exception {
+            LoginRequest request = new LoginRequest("test@example.com", "password123");
+            MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(request)))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            MockHttpSession session = (MockHttpSession) loginResult.getRequest().getSession();
+
+            mockMvc.perform(post("/api/auth/verify-email/confirm")
+                            .session(session)
+                            .with(csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"token\":\"invalid\"}"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("AUTH-400-TOKEN"));
         }
     }
 

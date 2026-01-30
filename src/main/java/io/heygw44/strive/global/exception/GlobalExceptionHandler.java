@@ -3,6 +3,7 @@ package io.heygw44.strive.global.exception;
 import io.heygw44.strive.global.response.ErrorResponse;
 import io.heygw44.strive.global.response.FieldError;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.web.authentication.session.SessionAuthenticationException;
 import org.springframework.validation.BindingResult;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -30,6 +31,13 @@ public class GlobalExceptionHandler {
         return ResponseEntity
                 .status(ErrorCode.VALIDATION_ERROR.getHttpStatus())
                 .body(ErrorResponse.validation(fieldErrors));
+    }
+
+    @ExceptionHandler(SessionAuthenticationException.class)
+    public ResponseEntity<ErrorResponse> handleSessionAuthException(SessionAuthenticationException ex) {
+        return ResponseEntity
+                .status(ErrorCode.SESSION_LIMIT_EXCEEDED.getHttpStatus())
+                .body(ErrorResponse.from(ErrorCode.SESSION_LIMIT_EXCEEDED));
     }
 
     @ExceptionHandler(Exception.class)
