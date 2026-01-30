@@ -2,9 +2,12 @@ package io.heygw44.strive.domain.user.controller;
 
 import io.heygw44.strive.domain.user.dto.*;
 import io.heygw44.strive.domain.user.service.AuthService;
+import io.heygw44.strive.global.exception.BusinessException;
+import io.heygw44.strive.global.exception.ErrorCode;
 import io.heygw44.strive.global.response.ApiResponse;
 import io.heygw44.strive.global.security.CustomUserDetails;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -15,6 +18,8 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.context.SecurityContextRepository;
+import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -24,6 +29,8 @@ public class AuthController {
 
     private final AuthService authService;
     private final AuthenticationManager authenticationManager;
+    private final SessionAuthenticationStrategy sessionAuthenticationStrategy;
+    private final SecurityContextRepository securityContextRepository;
 
     @PostMapping("/signup")
     public ResponseEntity<ApiResponse<SignupResponse>> signup(
@@ -38,7 +45,8 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<LoginResponse>> login(
             @Valid @RequestBody LoginRequest request,
-            HttpServletRequest httpRequest) {
+            HttpServletRequest httpRequest,
+            HttpServletResponse httpResponse) {
 
         // 인증 처리
         LoginResponse response = authService.authenticate(request);
@@ -49,9 +57,11 @@ public class AuthController {
         );
         SecurityContextHolder.getContext().setAuthentication(authentication);
 
-        // 새 세션 생성 (세션 고정 공격 방지)
-        HttpSession session = httpRequest.getSession(true);
-        session.setAttribute("SPRING_SECURITY_CONTEXT", SecurityContextHolder.getContext());
+        // 세션 고정 방지 및 동시 세션 제어 적용
+        sessionAuthenticationStrategy.onAuthentication(authentication, httpRequest, httpResponse);
+
+        // SecurityContext 저장
+        securityContextRepository.saveContext(SecurityContextHolder.getContext(), httpRequest, httpResponse);
 
         return ResponseEntity.ok(ApiResponse.success(response));
     }
@@ -84,7 +94,7 @@ public class AuthController {
         // 실제 운영에서는 단일 복합 토큰 또는 URL 쿼리 파라미터로 전달 가능
         String[] parts = request.token().split(":");
         if (parts.length != 2) {
-            throw new IllegalArgumentException("잘못된 토큰 형식입니다. 예상 형식: tokenId:rawToken");
+            throw new BusinessException(ErrorCode.VERIFICATION_TOKEN_INVALID);
         }
 
         String tokenId = parts[0];

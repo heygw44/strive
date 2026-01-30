@@ -94,8 +94,8 @@ public class AuthService {
         EmailVerificationToken savedToken = tokenRepository.save(token);
 
         // 운영 환경에서는 이메일 발송, MVP에서는 로그 출력으로 대체
-        log.info("이메일 인증 토큰 생성 - userId={}, tokenId={}, rawToken={}",
-                userId, savedToken.getId(), rawToken);
+        log.info("이메일 인증 토큰 생성 - userId={}, tokenId={}",
+                userId, savedToken.getId());
 
         return savedToken.getId();
     }
