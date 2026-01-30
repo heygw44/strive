@@ -67,3 +67,4 @@ temp/
 .DS_Store
 Thumbs.db
 .history/
+*:Zone.Identifier
