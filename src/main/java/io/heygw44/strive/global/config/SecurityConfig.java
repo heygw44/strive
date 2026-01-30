@@ -12,10 +12,17 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.authentication.session.*;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
+import org.springframework.security.web.context.SecurityContextRepository;
+import org.springframework.security.core.session.SessionRegistry;
+import org.springframework.security.core.session.SessionRegistryImpl;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
+
+import java.util.List;
 
 @Configuration
 @EnableWebSecurity
@@ -38,6 +45,9 @@ public class SecurityConfig {
                 .sessionManagement(session -> session
                         .sessionFixation().newSession()
                         .maximumSessions(1)
+                )
+                .securityContext(securityContext -> securityContext
+                        .securityContextRepository(securityContextRepository())
                 )
                 .authorizeHttpRequests(auth -> auth
                         // 공개 엔드포인트
@@ -69,5 +79,27 @@ public class SecurityConfig {
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
         return config.getAuthenticationManager();
+    }
+
+    @Bean
+    public SecurityContextRepository securityContextRepository() {
+        return new HttpSessionSecurityContextRepository();
+    }
+
+    @Bean
+    public SessionRegistry sessionRegistry() {
+        return new SessionRegistryImpl();
+    }
+
+    @Bean
+    public SessionAuthenticationStrategy sessionAuthenticationStrategy(SessionRegistry sessionRegistry) {
+        ConcurrentSessionControlAuthenticationStrategy concurrent =
+                new ConcurrentSessionControlAuthenticationStrategy(sessionRegistry);
+        concurrent.setMaximumSessions(1);
+
+        SessionFixationProtectionStrategy fixation = new SessionFixationProtectionStrategy();
+        RegisterSessionAuthenticationStrategy register = new RegisterSessionAuthenticationStrategy(sessionRegistry);
+
+        return new CompositeSessionAuthenticationStrategy(List.of(concurrent, fixation, register));
     }
 }
