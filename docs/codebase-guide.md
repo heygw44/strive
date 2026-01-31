@@ -1,6 +1,6 @@
 # Strive 코드베이스 가이드 (현재 구현 범위)
 
-이 문서는 **현재까지 구현된 범위(M0/M1)**의 주요 코드가 **어떻게 동작하고 왜 이렇게 작성되었는지**를 설명한다.  
+이 문서는 **현재까지 구현된 범위(M0/M2)**의 주요 코드가 **어떻게 동작하고 왜 이렇게 작성되었는지**를 설명한다.  
 패키지 구조, 요청 흐름, 예외/응답 규격, 보안 설정, 테스트 구성까지 정리한다.
 
 ---
@@ -11,7 +11,8 @@
 io.heygw44.strive
 ├── StriveApplication              # Spring Boot 엔트리포인트
 ├── domain
-│   └── user                       # 사용자/인증/프로필 도메인
+│   ├── user                       # 사용자/인증/프로필 도메인
+│   └── meetup                     # 모임 CRUD/조회 도메인
 ├── global
 │   ├── config                     # 보안/스프링 설정
 │   ├── exception                  # 예외 코드/핸들러
@@ -51,7 +52,7 @@ Validation 에러는 `fieldErrors`에 필드별 메시지를 담는다.
 - 파일: `src/main/java/io/heygw44/strive/global/response/FieldError.java`
 
 ### `PageResponse<T>`
-목록 응답을 위한 표준 페이지 포맷(현재 미사용).
+목록 응답을 위한 표준 페이지 포맷(모임 목록 응답에 사용).
 - 파일: `src/main/java/io/heygw44/strive/global/response/PageResponse.java`
 
 ---
@@ -198,7 +199,66 @@ JPA 기반 저장/조회 인터페이스.
 
 ---
 
-## 11) API 시퀀스 다이어그램
+## 11) 모임 도메인 (M2)
+
+### 11.1 엔티티
+- `Meetup`은 모임의 핵심 정보와 상태 전이 규칙을 가진다.
+- `MeetupStatus`는 상태 전이 가능한 흐름만 허용한다.
+- `Category`, `Region`은 모임 분류/지역 정보를 제공한다.
+- 소프트 삭제(`deletedAt`) 후에는 조회에서 제외된다.
+
+파일:
+- `src/main/java/io/heygw44/strive/domain/meetup/entity/Meetup.java`
+- `src/main/java/io/heygw44/strive/domain/meetup/entity/MeetupStatus.java`
+- `src/main/java/io/heygw44/strive/domain/meetup/entity/Category.java`
+- `src/main/java/io/heygw44/strive/domain/meetup/entity/Region.java`
+
+### 11.2 Repository
+- `MeetupRepository`: 삭제 제외 조회, 필터/페이징 목록, 비관적 락 조회 제공
+- `CategoryRepository`, `RegionRepository`: 카테고리/지역 조회 및 존재 검증
+
+파일:
+- `src/main/java/io/heygw44/strive/domain/meetup/repository/MeetupRepository.java`
+- `src/main/java/io/heygw44/strive/domain/meetup/repository/CategoryRepository.java`
+- `src/main/java/io/heygw44/strive/domain/meetup/repository/RegionRepository.java`
+
+### 11.3 DTO (요청/응답)
+- `CreateMeetupRequest`: 생성 요청 + Bean Validation
+- `UpdateMeetupRequest`: 부분 업데이트 + 상태 전이 요청
+- `MeetupResponse`, `MeetupListResponse`: 상세/목록 응답
+- `MeetupSearchCondition`: 기본 OPEN + startAt 정렬
+
+파일:
+- `src/main/java/io/heygw44/strive/domain/meetup/dto/CreateMeetupRequest.java`
+- `src/main/java/io/heygw44/strive/domain/meetup/dto/UpdateMeetupRequest.java`
+- `src/main/java/io/heygw44/strive/domain/meetup/dto/MeetupResponse.java`
+- `src/main/java/io/heygw44/strive/domain/meetup/dto/MeetupListResponse.java`
+- `src/main/java/io/heygw44/strive/domain/meetup/dto/MeetupSearchCondition.java`
+
+### 11.4 서비스 / 응답 조립기
+- `MeetupService`: CRUD + 도메인 규칙 검증
+  - 필드 수정은 **OPEN 상태에서만** 허용
+  - 상태 전이는 전이 규칙으로 검증
+  - 변경 사항 없는 수정 요청은 REQ-400
+- `MeetupResponseAssembler`: 응답 DTO 조립 전담, 목록 조회 시 배치 조회로 N+1 방지
+
+파일:
+- `src/main/java/io/heygw44/strive/domain/meetup/service/MeetupService.java`
+- `src/main/java/io/heygw44/strive/domain/meetup/service/MeetupResponseAssembler.java`
+
+### 11.5 MeetupController
+- `POST /api/meetups`: 모임 생성 (인증 필요)
+- `GET /api/meetups`: 목록 조회 (필터/정렬/페이징)
+- `GET /api/meetups/{id}`: 상세 조회
+- `PUT /api/meetups/{id}`: 수정 (작성자만)
+- `DELETE /api/meetups/{id}`: 소프트 삭제 (작성자만)
+
+파일:
+- `src/main/java/io/heygw44/strive/domain/meetup/controller/MeetupController.java`
+
+---
+
+## 12) API 시퀀스 다이어그램
 
 ### 로그인
 ```mermaid
@@ -255,9 +315,117 @@ sequenceDiagram
     ProfileController-->>Client: 200 OK + ApiResponse
 ```
 
+### 모임 생성
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant MeetupController
+    participant MeetupService
+    participant CategoryRepo
+    participant RegionRepo
+    participant MeetupRepo
+    participant MeetupAssembler
+    participant UserRepo
+    Client->>MeetupController: POST /api/meetups
+    MeetupController->>MeetupService: createMeetup(request, organizerId)
+    MeetupService->>CategoryRepo: existsById(categoryId)
+    MeetupService->>RegionRepo: existsByCode(regionCode)
+    MeetupService->>MeetupRepo: save(meetup)
+    MeetupService->>MeetupAssembler: toMeetupResponse(meetup)
+    MeetupAssembler->>UserRepo: findById(organizerId)
+    MeetupAssembler->>CategoryRepo: findById(categoryId)
+    MeetupAssembler->>RegionRepo: findById(regionCode)
+    MeetupAssembler-->>MeetupService: MeetupResponse
+    MeetupService-->>MeetupController: MeetupResponse
+    MeetupController-->>Client: 201 Created + ApiResponse
+```
+
+### 모임 목록 조회
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant MeetupController
+    participant MeetupService
+    participant MeetupRepo
+    participant MeetupAssembler
+    participant CategoryRepo
+    participant RegionRepo
+    Client->>MeetupController: GET /api/meetups?filters&page&size
+    MeetupController->>MeetupService: getMeetupsResponse(condition, pageable)
+    MeetupService->>MeetupRepo: findByFilters(...)
+    MeetupService->>MeetupAssembler: toMeetupListResponses(meetups)
+    MeetupAssembler->>CategoryRepo: findAllById(categoryIds)
+    MeetupAssembler->>RegionRepo: findAllById(regionCodes)
+    MeetupAssembler-->>MeetupService: List<MeetupListResponse>
+    MeetupService-->>MeetupController: PageResponse
+    MeetupController-->>Client: 200 OK + ApiResponse
+```
+
+### 모임 수정
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant MeetupController
+    participant MeetupService
+    participant MeetupRepo
+    participant MeetupAssembler
+    participant UserRepo
+    participant CategoryRepo
+    participant RegionRepo
+    Client->>MeetupController: PUT /api/meetups/{id}
+    MeetupController->>MeetupService: updateMeetupAndGetResponse(id, request, userId)
+    MeetupService->>MeetupRepo: findByIdAndDeletedAtIsNull(id)
+    MeetupService->>MeetupService: validateOrganizer / validateUpdateRequest
+    MeetupService->>MeetupService: validateStatusTransition (if needed)
+    MeetupService->>MeetupAssembler: toMeetupResponse(meetup)
+    MeetupAssembler->>UserRepo: findById(organizerId)
+    MeetupAssembler->>CategoryRepo: findById(categoryId)
+    MeetupAssembler->>RegionRepo: findById(regionCode)
+    MeetupAssembler-->>MeetupService: MeetupResponse
+    MeetupService-->>MeetupController: MeetupResponse
+    MeetupController-->>Client: 200 OK + ApiResponse
+```
+
+### 모임 삭제
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant MeetupController
+    participant MeetupService
+    participant MeetupRepo
+    Client->>MeetupController: DELETE /api/meetups/{id}
+    MeetupController->>MeetupService: deleteMeetup(id, userId)
+    MeetupService->>MeetupRepo: findByIdAndDeletedAtIsNull(id)
+    MeetupService->>MeetupService: validateOrganizer
+    MeetupService->>MeetupService: softDelete()
+    MeetupService-->>MeetupController: void
+    MeetupController-->>Client: 204 No Content
+```
+
 ---
 
-## 12) API 요청/응답 예시
+## 13) API 요청/응답 예시
+
+### 모임 API 스펙 요약 (M2)
+
+| API | 인증 | 요청 바디 | 응답 | 주요 에러 |
+| --- | --- | --- | --- | --- |
+| POST `/api/meetups` | 필요 | CreateMeetupRequest | MeetupResponse | REQ-400, RES-404, AUTH-401 |
+| GET `/api/meetups` | 불필요 | 없음 | PageResponse\<MeetupListResponse> | REQ-400 |
+| GET `/api/meetups/{id}` | 불필요 | 없음 | MeetupResponse | RES-404 |
+| PUT `/api/meetups/{id}` | 필요 | UpdateMeetupRequest | MeetupResponse | REQ-400, AUTH-401, AUTH-403, RES-404, MEETUP-409-STATE |
+| DELETE `/api/meetups/{id}` | 필요 | 없음 | 204 No Content | AUTH-401, AUTH-403, RES-404 |
+
+### 모임 에러 케이스 (대표)
+- REQ-400: 필수/형식 검증 실패, 변경 사항 없는 수정 요청
+- RES-404: 존재하지 않거나 삭제된 모임/카테고리/지역
+- AUTH-401: 인증되지 않은 요청
+- AUTH-403: 작성자 권한 위반
+- MEETUP-409-STATE: 허용되지 않는 상태 전이 또는 비-OPEN에서 필드 수정
 
 ### 회원가입
 요청:
@@ -402,9 +570,147 @@ X-CSRF-TOKEN: ...
 }
 ```
 
+### 모임 생성
+요청:
+```http
+POST /api/meetups
+Content-Type: application/json
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+
+{
+  "title": "주말 러닝 모임",
+  "description": "함께 러닝해요",
+  "categoryId": 1,
+  "regionCode": "SEOUL_GANGNAM",
+  "locationText": "강남역 2번 출구",
+  "startAt": "2026-02-07T09:00:00",
+  "endAt": "2026-02-07T11:00:00",
+  "recruitEndAt": "2026-02-06T23:59:00",
+  "capacity": 10,
+  "experienceLevelText": "초보자 환영"
+}
+```
+
+응답:
+```json
+{
+  "data": {
+    "id": 1,
+    "organizerId": 1,
+    "organizerNickname": "organizer",
+    "title": "주말 러닝 모임",
+    "description": "함께 러닝해요",
+    "categoryId": 1,
+    "categoryName": "러닝",
+    "regionCode": "SEOUL_GANGNAM",
+    "regionName": "강남구",
+    "locationText": "강남역 2번 출구",
+    "startAt": "2026-02-07T09:00:00",
+    "endAt": "2026-02-07T11:00:00",
+    "recruitEndAt": "2026-02-06T23:59:00",
+    "capacity": 10,
+    "status": "DRAFT",
+    "experienceLevelText": "초보자 환영",
+    "createdAt": "2026-01-31T10:00:00",
+    "updatedAt": "2026-01-31T10:00:00"
+  },
+  "traceId": "..."
+}
+```
+
+### 모임 목록 조회 (필터/페이징)
+요청:
+```http
+GET /api/meetups?regionCode=SEOUL_GANGNAM&sort=startAt&page=0&size=2
+```
+
+응답:
+```json
+{
+  "data": {
+    "items": [
+      {
+        "id": 1,
+        "title": "주말 러닝 모임",
+        "categoryId": 1,
+        "categoryName": "러닝",
+        "regionCode": "SEOUL_GANGNAM",
+        "regionName": "강남구",
+        "locationText": "강남역 2번 출구",
+        "startAt": "2026-02-07T09:00:00",
+        "recruitEndAt": "2026-02-06T23:59:00",
+        "capacity": 10,
+        "status": "OPEN",
+        "createdAt": "2026-01-31T10:00:00"
+      }
+    ],
+    "total": 1,
+    "page": 0,
+    "size": 2,
+    "hasNext": false
+  },
+  "traceId": "..."
+}
+```
+
+### 모임 수정
+요청:
+```http
+PUT /api/meetups/1
+Content-Type: application/json
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+
+{
+  "title": "주말 러닝 모임 (수정)",
+  "description": "함께 러닝해요 - 업데이트"
+}
+```
+
+응답:
+```json
+{
+  "data": {
+    "id": 1,
+    "organizerId": 1,
+    "organizerNickname": "organizer",
+    "title": "주말 러닝 모임 (수정)",
+    "description": "함께 러닝해요 - 업데이트",
+    "categoryId": 1,
+    "categoryName": "러닝",
+    "regionCode": "SEOUL_GANGNAM",
+    "regionName": "강남구",
+    "locationText": "강남역 2번 출구",
+    "startAt": "2026-02-07T09:00:00",
+    "endAt": "2026-02-07T11:00:00",
+    "recruitEndAt": "2026-02-06T23:59:00",
+    "capacity": 10,
+    "status": "OPEN",
+    "experienceLevelText": "초보자 환영",
+    "createdAt": "2026-01-31T10:00:00",
+    "updatedAt": "2026-01-31T11:00:00"
+  },
+  "traceId": "..."
+}
+```
+
+### 모임 삭제
+요청:
+```http
+DELETE /api/meetups/1
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답:
+```http
+204 No Content
+```
+
 ---
 
-## 13) 보안용 사용자 정보
+## 14) 보안용 사용자 정보
 
 ### `CustomUserDetails`
 Spring Security가 사용하는 사용자 모델.  
@@ -419,30 +725,37 @@ Spring Security가 사용하는 사용자 모델.
 
 ---
 
-## 14) 테스트 구성
+## 15) 테스트 구성
 
 ### 통합 테스트
 Spring Boot + MockMvc 기반.
 - `AuthIntegrationTest`: 로그인/세션 재발급/CSRF/401/토큰 형식 검증
 - `ProfileIntegrationTest`: 프로필 조회/수정/중복 닉네임 검증
+- `MeetupIntegrationTest`: 모임 CRUD/필터/권한/상태 전이 검증
 - `GlobalExceptionHandlerTest`: 검증/비즈니스 예외 응답 확인
 - `TraceIdFilterTest`: TraceId 생성/반환 확인
 
 파일:
 - `src/test/java/io/heygw44/strive/domain/user/controller/AuthIntegrationTest.java`
 - `src/test/java/io/heygw44/strive/domain/user/controller/ProfileIntegrationTest.java`
+- `src/test/java/io/heygw44/strive/domain/meetup/controller/MeetupIntegrationTest.java`
 - `src/test/java/io/heygw44/strive/global/exception/GlobalExceptionHandlerTest.java`
 - `src/test/java/io/heygw44/strive/global/filter/TraceIdFilterTest.java`
 
 ### 단위 테스트
 Mockito 기반 서비스 테스트.
 - `AuthServiceTest`: 회원가입/로그인/토큰 요청 검증
+- `MeetupServiceTest`: 모임 생성/수정/삭제 도메인 규칙 검증
+- `MeetupStatusTest`: 상태 전이 규칙 검증
 
-파일: `src/test/java/io/heygw44/strive/domain/user/service/AuthServiceTest.java`
+파일:
+- `src/test/java/io/heygw44/strive/domain/user/service/AuthServiceTest.java`
+- `src/test/java/io/heygw44/strive/domain/meetup/service/MeetupServiceTest.java`
+- `src/test/java/io/heygw44/strive/domain/meetup/entity/MeetupStatusTest.java`
 
 ---
 
-## 15) 환경 설정
+## 16) 환경 설정
 
 ### `application.yaml`
 기본 공통 설정.
@@ -462,7 +775,7 @@ Mockito 기반 서비스 테스트.
 
 ---
 
-## 16) 개발 관점 요약 (왜 이렇게 작성했나)
+## 17) 개발 관점 요약 (왜 이렇게 작성했나)
 
 1) **컨트롤러 얇게, 서비스에 규칙 집중**
    - 테스트와 유지보수에 유리.
@@ -472,13 +785,15 @@ Mockito 기반 서비스 테스트.
    - 직접 구현보다 Spring Security 전략 사용이 안전.
 4) **부분 업데이트는 null 보호**
    - 기존 데이터 손실 방지.
+5) **응답 조립 책임 분리**
+   - 조회 전용 로직을 분리해 서비스 복잡도를 낮춤.
 
 ---
 
-## 17) 다음에 확장될 가능성이 높은 포인트
+## 18) 다음에 확장될 가능성이 높은 포인트
 
-- Meetup/Participation 도메인 추가 시:
-  - `PageResponse` 활용 (목록/페이징)
+- Participation 도메인 추가 시:
+  - 정원/승인 동시성 처리 (락/버전)
   - 권한/상태 전이 ErrorCode 확장
 - 이메일 인증: 실 운영에서는 토큰을 URL로 전달하고, 인증 엔드포인트 공개 필요 가능성
 
