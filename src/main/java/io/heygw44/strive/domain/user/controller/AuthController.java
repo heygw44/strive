@@ -6,6 +6,7 @@ import io.heygw44.strive.global.exception.BusinessException;
 import io.heygw44.strive.global.exception.ErrorCode;
 import io.heygw44.strive.global.response.ApiResponse;
 import io.heygw44.strive.global.security.CustomUserDetails;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
@@ -67,12 +68,20 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<ApiResponse<Void>> logout(HttpServletRequest request) {
+    public ResponseEntity<ApiResponse<Void>> logout(HttpServletRequest request,
+                                                    HttpServletResponse response) {
         HttpSession session = request.getSession(false);
         if (session != null) {
             session.invalidate();
         }
         SecurityContextHolder.clearContext();
+
+        Cookie expired = new Cookie("JSESSIONID", "");
+        expired.setPath("/");
+        expired.setHttpOnly(true);
+        expired.setMaxAge(0);
+        expired.setSecure(request.isSecure());
+        response.addCookie(expired);
 
         return ResponseEntity.ok(ApiResponse.success(null));
     }

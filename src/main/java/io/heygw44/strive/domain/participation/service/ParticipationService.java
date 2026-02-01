@@ -76,7 +76,7 @@ public class ParticipationService {
     public void cancelParticipation(Long meetupId, Long userId) {
         // 1. 본인 참여 조회
         Participation participation = participationRepository
-            .findByMeetupIdAndUserId(meetupId, userId)
+            .findByMeetupIdAndUserIdForUpdate(meetupId, userId)
             .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
 
         // 2. 상태 전이 (REQUESTED/APPROVED → CANCELLED)
@@ -85,6 +85,17 @@ public class ParticipationService {
 
         log.info("참여 취소 완료: meetupId={}, userId={}, participationId={}",
             meetupId, userId, participation.getId());
+    }
+
+    /**
+     * 본인 참여 상태 조회
+     */
+    public ParticipationResponse getMyParticipation(Long meetupId, Long userId) {
+        Participation participation = participationRepository
+            .findByMeetupIdAndUserId(meetupId, userId)
+            .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
+
+        return toResponse(participation);
     }
 
     /**
@@ -106,7 +117,7 @@ public class ParticipationService {
         validateMeetupOpenForParticipation(meetup);
 
         // 4. 참여 조회 및 모임 소속 확인
-        Participation participation = getParticipationOrThrow(participationId);
+        Participation participation = getParticipationForUpdateOrThrow(participationId);
         if (!participation.belongsToMeetup(meetupId)) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
         }
@@ -141,7 +152,7 @@ public class ParticipationService {
         validateOrganizer(meetup, organizerId);
 
         // 3. 참여 조회 및 모임 소속 확인
-        Participation participation = getParticipationOrThrow(participationId);
+        Participation participation = getParticipationForUpdateOrThrow(participationId);
         if (!participation.belongsToMeetup(meetupId)) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
         }
@@ -202,8 +213,8 @@ public class ParticipationService {
             .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
     }
 
-    private Participation getParticipationOrThrow(Long participationId) {
-        return participationRepository.findById(participationId)
+    private Participation getParticipationForUpdateOrThrow(Long participationId) {
+        return participationRepository.findByIdForUpdate(participationId)
             .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
     }
 

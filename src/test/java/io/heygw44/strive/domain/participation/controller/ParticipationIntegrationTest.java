@@ -161,6 +161,38 @@ class ParticipationIntegrationTest {
     }
 
     @Nested
+    @DisplayName("본인 참여 상태 조회")
+    class MyParticipationTest {
+
+        @Test
+        @DisplayName("본인 참여 상태 조회 성공")
+        void getMyParticipation_success() throws Exception {
+            Meetup meetup = createOpenMeetup(10);
+
+            mockMvc.perform(post("/api/meetups/" + meetup.getId() + "/participations")
+                            .session(participantSession)
+                            .with(csrf()))
+                    .andExpect(status().isCreated());
+
+            mockMvc.perform(get("/api/meetups/" + meetup.getId() + "/participations/me")
+                            .session(participantSession))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.meetupId").value(meetup.getId()))
+                    .andExpect(jsonPath("$.data.userId").value(participant.getId()))
+                    .andExpect(jsonPath("$.data.status").value("REQUESTED"));
+        }
+
+        @Test
+        @DisplayName("세션 없이 조회 시 401")
+        void getMyParticipation_withoutSession_returns401() throws Exception {
+            Meetup meetup = createOpenMeetup(10);
+
+            mockMvc.perform(get("/api/meetups/" + meetup.getId() + "/participations/me"))
+                    .andExpect(status().isUnauthorized());
+        }
+    }
+
+    @Nested
     @DisplayName("AC-MEETUP-03: 모집 마감 후 신청/승인 금지")
     class DeadlineTest {
 

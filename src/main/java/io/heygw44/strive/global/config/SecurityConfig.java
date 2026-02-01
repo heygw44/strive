@@ -52,8 +52,9 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // 공개 엔드포인트
                         .requestMatchers("/api/auth/signup", "/api/auth/login").permitAll()
-                        // 참여 목록 조회는 인증 필요 (주최자 전용)
+                        // 참여 조회는 인증 필요 (주최자/참여자)
                         .requestMatchers(HttpMethod.GET, "/api/meetups/*/participations").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/api/meetups/*/participations/me").authenticated()
                         // 모임 목록/상세 조회는 공개
                         .requestMatchers(HttpMethod.GET, "/api/meetups", "/api/meetups/*").permitAll()
                         // 인증 필요 엔드포인트

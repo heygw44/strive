@@ -3,9 +3,13 @@ package io.heygw44.strive.domain.participation.repository;
 import io.heygw44.strive.domain.participation.entity.Participation;
 import io.heygw44.strive.domain.participation.entity.ParticipationStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.Optional;
+import jakarta.persistence.LockModeType;
 
 public interface ParticipationRepository extends JpaRepository<Participation, Long> {
 
@@ -18,6 +22,21 @@ public interface ParticipationRepository extends JpaRepository<Participation, Lo
      * 본인 참여 조회 (취소용)
      */
     Optional<Participation> findByMeetupIdAndUserId(Long meetupId, Long userId);
+
+    /**
+     * 본인 참여 조회 (취소용, PESSIMISTIC_WRITE)
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Participation p where p.meetupId = :meetupId and p.userId = :userId")
+    Optional<Participation> findByMeetupIdAndUserIdForUpdate(
+        @Param("meetupId") Long meetupId, @Param("userId") Long userId);
+
+    /**
+     * 참여 단건 조회 (PESSIMISTIC_WRITE)
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Participation p where p.id = :participationId")
+    Optional<Participation> findByIdForUpdate(@Param("participationId") Long participationId);
 
     /**
      * APPROVED 카운트 (정원 체크, AC-PART-02)
