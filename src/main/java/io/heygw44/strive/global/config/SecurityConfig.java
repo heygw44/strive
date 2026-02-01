@@ -52,7 +52,10 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // 공개 엔드포인트
                         .requestMatchers("/api/auth/signup", "/api/auth/login").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/meetups", "/api/meetups/**").permitAll()
+                        // 참여 목록 조회는 인증 필요 (주최자 전용)
+                        .requestMatchers(HttpMethod.GET, "/api/meetups/*/participations").authenticated()
+                        // 모임 목록/상세 조회는 공개
+                        .requestMatchers(HttpMethod.GET, "/api/meetups", "/api/meetups/*").permitAll()
                         // 인증 필요 엔드포인트
                         .requestMatchers("/api/me", "/api/me/**").authenticated()
                         .requestMatchers("/api/auth/logout").authenticated()
@@ -61,7 +64,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.PUT, "/api/meetups/**").authenticated()
                         .requestMatchers(HttpMethod.PATCH, "/api/meetups/**").authenticated()
                         .requestMatchers(HttpMethod.DELETE, "/api/meetups/**").authenticated()
-                        .requestMatchers("/api/participations/**").authenticated()
+                        // 참여 API는 /api/meetups/{id}/participations/** 경로 사용
+                        // POST/PATCH/DELETE는 위 설정으로 커버됨
                         .anyRequest().permitAll()
                 )
                 .exceptionHandling(exception -> exception
