@@ -4,11 +4,14 @@ import jakarta.persistence.*;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
+@EntityListeners(AuditingEntityListener.class)
 @Table(name = "email_verification_tokens")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
@@ -31,6 +34,7 @@ public class EmailVerificationToken {
     @Column(nullable = false)
     private boolean used = false;
 
+    @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
@@ -40,7 +44,6 @@ public class EmailVerificationToken {
         this.userId = userId;
         this.expiresAt = LocalDateTime.now().plusMinutes(EXPIRATION_MINUTES);
         this.used = false;
-        this.createdAt = LocalDateTime.now();
     }
 
     public static EmailVerificationToken create(String tokenHash, Long userId) {

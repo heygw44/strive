@@ -1,5 +1,6 @@
 package io.heygw44.strive.domain.meetup.entity;
 
+import io.heygw44.strive.global.entity.BaseTimeEntity;
 import io.heygw44.strive.global.exception.BusinessException;
 import io.heygw44.strive.global.exception.ErrorCode;
 import jakarta.persistence.*;
@@ -21,7 +22,7 @@ import java.time.LocalDateTime;
 })
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class Meetup {
+public class Meetup extends BaseTimeEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -70,12 +71,6 @@ public class Meetup {
     @Version
     private Integer version;
 
-    @Column(name = "created_at", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
-
-    @Column(name = "updated_at")
-    private LocalDateTime updatedAt;
-
     private Meetup(Long organizerId, String title, String description, Long categoryId,
                    String regionCode, String locationText, LocalDateTime startAt,
                    LocalDateTime endAt, LocalDateTime recruitEndAt, Integer capacity,
@@ -92,8 +87,6 @@ public class Meetup {
         this.capacity = capacity;
         this.experienceLevelText = experienceLevelText;
         this.status = MeetupStatus.DRAFT;
-        this.createdAt = LocalDateTime.now();
-        this.updatedAt = LocalDateTime.now();
     }
 
     /**
@@ -127,7 +120,6 @@ public class Meetup {
         if (experienceLevelText != null) {
             this.experienceLevelText = experienceLevelText;
         }
-        this.updatedAt = LocalDateTime.now();
     }
 
     /**
@@ -139,7 +131,6 @@ public class Meetup {
             throw new BusinessException(ErrorCode.MEETUP_INVALID_STATE);
         }
         this.status = newStatus;
-        this.updatedAt = LocalDateTime.now();
     }
 
     /**
@@ -176,7 +167,6 @@ public class Meetup {
      */
     public void softDelete() {
         this.deletedAt = LocalDateTime.now();
-        this.updatedAt = LocalDateTime.now();
         // 삭제 시 상태도 CANCELLED로 변경 (OPEN/CLOSED인 경우만)
         if (this.status == MeetupStatus.OPEN || this.status == MeetupStatus.CLOSED) {
             this.status = MeetupStatus.CANCELLED;
