@@ -1,18 +1,18 @@
 package io.heygw44.strive.domain.user.entity;
 
+import io.heygw44.strive.global.entity.BaseTimeEntity;
 import jakarta.persistence.*;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 @Entity
 @Table(name = "users")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class User {
+public class User extends BaseTimeEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -43,19 +43,11 @@ public class User {
     @Column(name = "is_verified", nullable = false)
     private boolean isVerified = false;
 
-    @Column(name = "created_at", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
-
-    @Column(name = "updated_at")
-    private LocalDateTime updatedAt;
-
     private User(String email, String passwordHash, String nickname) {
         this.email = email;
         this.passwordHash = passwordHash;
         this.nickname = nickname;
         this.isVerified = false;
-        this.createdAt = LocalDateTime.now();
-        this.updatedAt = LocalDateTime.now();
     }
 
     public static User create(String email, String passwordHash, String nickname) {
@@ -79,12 +71,10 @@ public class User {
         if (experienceLevel != null) {
             this.experienceLevel = experienceLevel;
         }
-        this.updatedAt = LocalDateTime.now();
     }
 
     public void verifyEmail() {
         this.isVerified = true;
-        this.updatedAt = LocalDateTime.now();
     }
 
     // Lombok @Getter는 boolean 필드에 대해 isXxx() 생성

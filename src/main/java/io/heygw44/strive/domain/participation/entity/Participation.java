@@ -1,13 +1,12 @@
 package io.heygw44.strive.domain.participation.entity;
 
+import io.heygw44.strive.global.entity.BaseTimeEntity;
 import io.heygw44.strive.global.exception.BusinessException;
 import io.heygw44.strive.global.exception.ErrorCode;
 import jakarta.persistence.*;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-
-import java.time.LocalDateTime;
 
 /**
  * 참여 엔티티
@@ -24,7 +23,7 @@ import java.time.LocalDateTime;
        })
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class Participation {
+public class Participation extends BaseTimeEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -40,12 +39,6 @@ public class Participation {
     @Column(nullable = false, length = 20)
     private ParticipationStatus status;
 
-    @Column(name = "created_at", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
-
-    @Column(name = "updated_at")
-    private LocalDateTime updatedAt;
-
     @Version
     private Integer version;
 
@@ -53,8 +46,6 @@ public class Participation {
         this.meetupId = meetupId;
         this.userId = userId;
         this.status = ParticipationStatus.REQUESTED;
-        this.createdAt = LocalDateTime.now();
-        this.updatedAt = LocalDateTime.now();
     }
 
     /**
@@ -73,7 +64,6 @@ public class Participation {
             throw new BusinessException(ErrorCode.PARTICIPATION_INVALID_STATE);
         }
         this.status = newStatus;
-        this.updatedAt = LocalDateTime.now();
     }
 
     /**
