@@ -15,7 +15,8 @@ io.heygw44.strive
 │   ├── meetup                     # 모임 CRUD/조회 도메인
 │   └── participation              # 참여(신청/취소/승인/거절) 도메인
 ├── global
-│   ├── config                     # 보안/스프링 설정
+│   ├── config                     # 보안/JPA Auditing 설정
+│   ├── entity                     # 공통 엔티티 (BaseTimeEntity)
 │   ├── exception                  # 예외 코드/핸들러
 │   ├── filter                     # 공통 필터
 │   ├── response                   # 공통 응답 포맷
@@ -107,12 +108,45 @@ Spring Security의 핵심 정책을 정의한다.
 
 파일: `src/main/java/io/heygw44/strive/global/config/SecurityConfig.java`
 
+### `JpaAuditingConfig`
+JPA Auditing 기능을 활성화하는 설정 클래스.
+- `@EnableJpaAuditing`으로 `@CreatedDate`, `@LastModifiedDate` 자동 처리 활성화
+
+파일: `src/main/java/io/heygw44/strive/global/config/JpaAuditingConfig.java`
+
+### `BaseTimeEntity`
+모든 엔티티의 공통 타임스탬프 필드를 관리하는 추상 클래스.
+- `@MappedSuperclass`로 상속 전용 (별도 테이블 생성 안 함)
+- `@CreatedDate`: 엔티티 생성 시 자동 설정 (`updatable = false`)
+- `@LastModifiedDate`: 엔티티 수정 시 자동 갱신
+
+```java
+@MappedSuperclass
+@EntityListeners(AuditingEntityListener.class)
+@Getter
+public abstract class BaseTimeEntity {
+    @CreatedDate
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @LastModifiedDate
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
+}
+```
+
+**상속 엔티티**: User, Meetup, Participation
+**예외**: EmailVerificationToken은 `updatedAt`이 없어 `@CreatedDate`만 직접 적용
+
+파일: `src/main/java/io/heygw44/strive/global/entity/BaseTimeEntity.java`
+
 ---
 
 ## 7) 인증/회원 도메인
 
 ### 7.1 User 엔티티
 `User`는 사용자 기본 정보 + 프로필 정보를 가진다.
+- `BaseTimeEntity` 상속 (createdAt/updatedAt 자동 관리)
 - 이메일/닉네임은 유니크
 - `isVerified`로 이메일 인증 여부 관리
 - `updateProfile`은 **null이 아닌 값만 반영**(부분 업데이트)
@@ -122,6 +156,7 @@ Spring Security의 핵심 정책을 정의한다.
 
 ### 7.2 EmailVerificationToken
 이메일 인증 토큰을 관리한다.
+- `@CreatedDate`로 생성 시간 자동 설정 (updatedAt 없음)
 - 토큰은 UUID로 생성, 해시 값만 저장
 - 만료 시간 15분
 - `isValid()`가 유효성 판단(미사용 + 만료 전)
@@ -206,6 +241,7 @@ JPA 기반 저장/조회 인터페이스.
 
 ### 11.1 엔티티
 - `Meetup`은 모임의 핵심 정보와 상태 전이 규칙을 가진다.
+- `BaseTimeEntity` 상속 (createdAt/updatedAt 자동 관리)
 - `MeetupStatus`는 상태 전이 가능한 흐름만 허용한다.
 - `Category`, `Region`은 모임 분류/지역 정보를 제공한다.
 - 소프트 삭제(`deletedAt`) 후에는 조회에서 제외된다.
@@ -317,7 +353,7 @@ public enum ParticipationStatus {
            @Index(name = "idx_participation_meetup_status",
                   columnList = "meetup_id, status")  // 상태별 목록 조회 최적화
        })
-public class Participation {
+public class Participation extends BaseTimeEntity {  // createdAt/updatedAt 자동 관리
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
@@ -1486,6 +1522,9 @@ Mockito 기반 서비스 테스트.
    - 기존 데이터 손실 방지.
 5) **응답 조립 책임 분리**
    - 조회 전용 로직을 분리해 서비스 복잡도를 낮춤.
+6) **JPA Auditing으로 타임스탬프 자동 관리**
+   - 수동 `LocalDateTime.now()` 설정 제거로 보일러플레이트 감소.
+   - `BaseTimeEntity` 상속으로 일관성 보장.
 
 ---
 
