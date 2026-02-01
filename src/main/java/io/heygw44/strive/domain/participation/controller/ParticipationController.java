@@ -58,6 +58,21 @@ public class ParticipationController {
     }
 
     /**
+     * 본인 참여 상태 조회
+     * GET /api/meetups/{meetupId}/participations/me
+     */
+    @GetMapping("/me")
+    public ResponseEntity<ApiResponse<ParticipationResponse>> getMyParticipation(
+            @PathVariable Long meetupId,
+            @AuthenticationPrincipal CustomUserDetails userDetails) {
+
+        ParticipationResponse response = participationService.getMyParticipation(
+            meetupId, userDetails.getUserId());
+
+        return ResponseEntity.ok(ApiResponse.success(response));
+    }
+
+    /**
      * 참여 승인 (주최자)
      * PATCH /api/meetups/{meetupId}/participations/{participationId}/approve
      * AC-AUTH-03: Organizer만 승인 가능

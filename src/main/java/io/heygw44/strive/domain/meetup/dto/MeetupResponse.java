@@ -24,13 +24,15 @@ public record MeetupResponse(
     LocalDateTime endAt,
     LocalDateTime recruitEndAt,
     Integer capacity,
+    long approvedCount,
     MeetupStatus status,
     String experienceLevelText,
     LocalDateTime createdAt,
     LocalDateTime updatedAt
 ) {
     public static MeetupResponse from(Meetup meetup, String organizerNickname,
-                                       String categoryName, String regionName) {
+                                       String categoryName, String regionName,
+                                       long approvedCount) {
         return new MeetupResponse(
             meetup.getId(),
             meetup.getOrganizerId(),
@@ -46,6 +48,7 @@ public record MeetupResponse(
             meetup.getEndAt(),
             meetup.getRecruitEndAt(),
             meetup.getCapacity(),
+            approvedCount,
             meetup.getStatus(),
             meetup.getExperienceLevelText(),
             meetup.getCreatedAt(),

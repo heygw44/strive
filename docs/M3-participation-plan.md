@@ -112,6 +112,9 @@ public class Participation {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    @Version
+    private Integer version;
+
     // 팩토리 메서드: request()
     // 상태 전이 메서드: approve(), reject(), cancel()
 }
@@ -131,6 +134,17 @@ public interface ParticipationRepository extends JpaRepository<Participation, Lo
 
     // 본인 참여 조회 (취소용)
     Optional<Participation> findByMeetupIdAndUserId(Long meetupId, Long userId);
+
+    // 본인 참여 조회 (취소용, PESSIMISTIC_WRITE)
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Participation p where p.meetupId = :meetupId and p.userId = :userId")
+    Optional<Participation> findByMeetupIdAndUserIdForUpdate(
+        @Param("meetupId") Long meetupId, @Param("userId") Long userId);
+
+    // 참여 단건 조회 (PESSIMISTIC_WRITE)
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Participation p where p.id = :participationId")
+    Optional<Participation> findByIdForUpdate(@Param("participationId") Long participationId);
 
     // APPROVED 카운트 (정원 체크, AC-PART-02)
     long countByMeetupIdAndStatus(Long meetupId, ParticipationStatus status);
@@ -228,7 +242,7 @@ public class ParticipationService {
     public void cancelParticipation(Long meetupId, Long userId) {
         // 1. 본인 참여 조회
         Participation participation = participationRepository
-            .findByMeetupIdAndUserId(meetupId, userId)
+            .findByMeetupIdAndUserIdForUpdate(meetupId, userId)
             .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
 
         // 2. 상태 전이 검증 → PART-409-STATE
@@ -255,7 +269,7 @@ public class ParticipationService {
         validateMeetupOpenForParticipation(meetup);
 
         // 4. 참여 조회 및 상태 전이 검증 → PART-409-STATE
-        Participation participation = participationRepository.findById(participationId)
+        Participation participation = participationRepository.findByIdForUpdate(participationId)
             .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
 
         if (!participation.isStatus(ParticipationStatus.REQUESTED)) {
@@ -284,7 +298,7 @@ public class ParticipationService {
         validateOrganizer(meetup, organizerId);
 
         // 3. 참여 조회 및 상태 전이 검증 → PART-409-STATE
-        Participation participation = participationRepository.findById(participationId)
+        Participation participation = participationRepository.findByIdForUpdate(participationId)
             .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND));
 
         // 4. REJECTED로 전이
@@ -331,6 +345,7 @@ public class ParticipationService {
 ```
 POST   /api/meetups/{meetupId}/participations                      # 신청 (인증 필수)
 DELETE /api/meetups/{meetupId}/participations/me                   # 취소 (본인만)
+GET    /api/meetups/{meetupId}/participations/me                   # 본인 상태 조회
 PATCH  /api/meetups/{meetupId}/participations/{id}/approve         # 승인 (Organizer만)
 PATCH  /api/meetups/{meetupId}/participations/{id}/reject          # 거절 (Organizer만)
 GET    /api/meetups/{meetupId}/participations                      # 목록 (Organizer만)
@@ -447,6 +462,14 @@ class DuplicateParticipationTest {
     @Test
     @DisplayName("동일 모임 중복 신청 시 PART-409-DUPLICATE")
     void requestParticipation_duplicate_returns409() { ... }
+}
+
+@Nested
+@DisplayName("본인 참여 상태 조회")
+class MyParticipationTest {
+    @Test
+    @DisplayName("본인 참여 상태 조회 성공")
+    void getMyParticipation_success() { ... }
 }
 
 @Nested
@@ -587,6 +610,7 @@ class CapacityTest {
 
 M3에서 비관적 락 이미 적용됨:
 - `approveParticipation()`에서 `meetupRepository.findByIdForUpdate()` 사용 (동시성 제어)
+- `approveParticipation()/rejectParticipation()/cancelParticipation()`에서 참여 엔티티 PESSIMISTIC_WRITE 조회 적용
 
 M4에서 추가할 부분:
 

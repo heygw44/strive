@@ -12,6 +12,7 @@ public record CreateMeetupRequest(
     @Size(max = 100, message = "모임 제목은 100자를 초과할 수 없습니다")
     String title,
 
+    @NotBlank(message = "모임 설명을 입력해주세요")
     @Size(max = 2000, message = "모임 설명은 2000자를 초과할 수 없습니다")
     String description,
 

@@ -7,6 +7,8 @@ import io.heygw44.strive.domain.meetup.entity.Meetup;
 import io.heygw44.strive.domain.meetup.entity.Region;
 import io.heygw44.strive.domain.meetup.repository.CategoryRepository;
 import io.heygw44.strive.domain.meetup.repository.RegionRepository;
+import io.heygw44.strive.domain.participation.entity.ParticipationStatus;
+import io.heygw44.strive.domain.participation.repository.ParticipationRepository;
 import io.heygw44.strive.domain.user.entity.User;
 import io.heygw44.strive.domain.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +29,7 @@ public class MeetupResponseAssembler {
     private final UserRepository userRepository;
     private final CategoryRepository categoryRepository;
     private final RegionRepository regionRepository;
+    private final ParticipationRepository participationRepository;
 
     public MeetupResponse toMeetupResponse(Meetup meetup) {
         String organizerNickname = userRepository.findById(meetup.getOrganizerId())
@@ -41,7 +44,10 @@ public class MeetupResponseAssembler {
             .map(Region::getName)
             .orElse("알 수 없음");
 
-        return MeetupResponse.from(meetup, organizerNickname, categoryName, regionName);
+        long approvedCount = participationRepository.countByMeetupIdAndStatus(
+            meetup.getId(), ParticipationStatus.APPROVED);
+
+        return MeetupResponse.from(meetup, organizerNickname, categoryName, regionName, approvedCount);
     }
 
     /**

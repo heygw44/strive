@@ -173,7 +173,7 @@ JPA 기반 저장/조회 인터페이스.
   - AuthenticationManager로 인증 후
   - `SessionAuthenticationStrategy` 적용
   - `SecurityContextRepository`에 저장
-- `POST /api/auth/logout` : 세션 무효화
+- `POST /api/auth/logout` : 세션 무효화 + JSESSIONID 쿠키 만료
 - `POST /api/auth/verify-email/request` : 이메일 인증 토큰 생성
 - `POST /api/auth/verify-email/confirm` : 토큰 확인 후 인증 완료
 
@@ -263,43 +263,281 @@ JPA 기반 저장/조회 인터페이스.
 
 ## 12) 참여 도메인 (M3)
 
-### 12.1 엔티티/상태
-- `Participation`은 참여 신청/승인/거절/취소 상태를 관리한다.
-- `(meetup_id, user_id)` 유니크 제약으로 중복 신청을 차단한다.
-- `ParticipationStatus`의 전이 규칙만 허용한다.
+### 12.1 상태 전이 다이어그램
+
+```mermaid
+stateDiagram-v2
+    [*] --> REQUESTED : 참여 신청
+    REQUESTED --> APPROVED : 주최자 승인
+    REQUESTED --> REJECTED : 주최자 거절
+    REQUESTED --> CANCELLED : 신청자 취소
+    APPROVED --> CANCELLED : 참가자 취소
+    REJECTED --> [*]
+    CANCELLED --> [*]
+```
+
+### 12.2 엔티티/상태 상세
+
+#### ParticipationStatus (상태 전이 규칙)
+
+```java
+public enum ParticipationStatus {
+    REQUESTED,  // 신청
+    APPROVED,   // 확정
+    REJECTED,   // 거절
+    CANCELLED;  // 취소
+
+    public boolean canTransitionTo(ParticipationStatus target) {
+        return switch (this) {
+            case REQUESTED -> target == APPROVED || target == REJECTED || target == CANCELLED;
+            case APPROVED -> target == CANCELLED;
+            case REJECTED, CANCELLED -> false;  // 최종 상태
+        };
+    }
+}
+```
+
+| 현재 상태 | 전이 가능 대상 | 설명 |
+|-----------|---------------|------|
+| REQUESTED | APPROVED, REJECTED, CANCELLED | 신청 상태에서 모든 전이 가능 |
+| APPROVED | CANCELLED | 확정 후 취소만 가능 |
+| REJECTED | (없음) | 최종 상태 |
+| CANCELLED | (없음) | 최종 상태 |
+
+#### Participation 엔티티
+
+```java
+@Entity
+@Table(name = "participation",
+       uniqueConstraints = @UniqueConstraint(
+           name = "uk_participation_meetup_user",
+           columnNames = {"meetup_id", "user_id"}  // 동일 모임 중복 신청 방지
+       ),
+       indexes = {
+           @Index(name = "idx_participation_meetup_status",
+                  columnList = "meetup_id, status")  // 상태별 목록 조회 최적화
+       })
+public class Participation {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "meetup_id", nullable = false)
+    private Long meetupId;
+
+    @Column(name = "user_id", nullable = false)
+    private Long userId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    private ParticipationStatus status;
+
+    @Version
+    private Integer version;  // 낙관적 락 (변경 충돌 감지)
+    // ...
+}
+```
+
+**주요 메서드:**
+
+| 메서드 | 설명 | 예외 |
+|--------|------|------|
+| `Participation.request(meetupId, userId)` | 팩토리 메서드, REQUESTED 상태로 생성 | - |
+| `approve()` | REQUESTED → APPROVED 전이 | PART-409-STATE |
+| `reject()` | REQUESTED → REJECTED 전이 | PART-409-STATE |
+| `cancel()` | REQUESTED/APPROVED → CANCELLED 전이 | PART-409-STATE |
+| `isStatus(status)` | 현재 상태 확인 헬퍼 | - |
+| `belongsToMeetup(meetupId)` | 모임 소속 확인 헬퍼 | - |
+
+**내부 상태 전이 메커니즘:**
+
+```java
+private void transitionTo(ParticipationStatus newStatus) {
+    if (!this.status.canTransitionTo(newStatus)) {
+        throw new BusinessException(ErrorCode.PARTICIPATION_INVALID_STATE);
+    }
+    this.status = newStatus;
+    this.updatedAt = LocalDateTime.now();
+}
+```
 
 파일:
 - `src/main/java/io/heygw44/strive/domain/participation/entity/Participation.java`
 - `src/main/java/io/heygw44/strive/domain/participation/entity/ParticipationStatus.java`
 
-### 12.2 Repository
-- `ParticipationRepository`: 중복 신청 확인, 본인 참여 조회, 승인 카운트, 목록 조회
+### 12.3 Repository 상세
+
+| 메서드 | 용도 | 락 모드 | 사용처 | AC |
+|--------|------|---------|--------|-----|
+| `existsByMeetupIdAndUserId` | 중복 신청 확인 | 없음 | 신청 | AC-PART-01 |
+| `findByMeetupIdAndUserId` | 본인 참여 조회 | 없음 | 상태 조회 | - |
+| `findByMeetupIdAndUserIdForUpdate` | 본인 참여 조회 (락) | PESSIMISTIC_WRITE | 취소 | AC-PART-03 |
+| `findByIdForUpdate` | 참여 단건 조회 (락) | PESSIMISTIC_WRITE | 승인/거절 | AC-PART-02 |
+| `countByMeetupIdAndStatus` | APPROVED 카운트 | 없음 | 정원 검증 | AC-PART-02 |
+| `findByMeetupIdOrderByCreatedAtAsc` | 목록 조회 | 없음 | 주최자 목록 | - |
+
+**PESSIMISTIC_WRITE 사용 예시:**
+
+```java
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+@Query("select p from Participation p where p.id = :participationId")
+Optional<Participation> findByIdForUpdate(@Param("participationId") Long participationId);
+```
 
 파일:
 - `src/main/java/io/heygw44/strive/domain/participation/repository/ParticipationRepository.java`
 
-### 12.3 DTO (응답)
-- `ParticipationResponse`: 단건 응답
-- `ParticipationListResponse`: 주최자용 목록 응답
+### 12.4 DTO (응답) 상세
+
+**ParticipationResponse (단건):**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `id` | Long | 참여 ID |
+| `meetupId` | Long | 모임 ID |
+| `userId` | Long | 사용자 ID |
+| `userNickname` | String | 사용자 닉네임 (조회 시 조인) |
+| `status` | ParticipationStatus | 현재 상태 |
+| `createdAt` | LocalDateTime | 신청 일시 |
+| `updatedAt` | LocalDateTime | 최종 변경 일시 |
+
+**ParticipationListResponse (주최자용 목록):**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `participations` | List\<ParticipationResponse\> | 참여 목록 |
+| `totalCount` | long | 전체 신청 수 |
+| `approvedCount` | long | 승인된 수 |
+| `capacity` | int | 모임 정원 |
 
 파일:
 - `src/main/java/io/heygw44/strive/domain/participation/dto/ParticipationResponse.java`
 - `src/main/java/io/heygw44/strive/domain/participation/dto/ParticipationListResponse.java`
 
-### 12.4 서비스
-- `ParticipationService`: 신청/취소/승인/거절/목록 조회 규칙 담당
-- 동시성 중복 신청 시 `DataIntegrityViolationException`을 `PART-409-DUPLICATE`로 매핑
-- 승인 시 `findByIdForUpdate`로 정원 동시성 제어, 상태 검증 후 정원 체크
+### 12.5 서비스 상세 (핵심 비즈니스 로직)
+
+#### requestParticipation() - 참여 신청
+
+```
+검증 순서: 모임 존재 → OPEN 상태 → 마감일 → 중복 체크
+```
+
+**흐름:**
+1. `getMeetupOrThrow(meetupId)` - 모임 조회 (삭제 제외)
+2. `validateMeetupOpenForParticipation(meetup)` - OPEN + 마감일 검증
+3. `existsByMeetupIdAndUserId()` - 중복 신청 확인
+4. `Participation.request()` - REQUESTED 상태로 생성
+5. `save()` + `DataIntegrityViolationException` 처리
+
+**동시성 처리:**
+- 선 체크: `existsByMeetupIdAndUserId()`로 사전 검증
+- 후 제약: UNIQUE 제약 위반 시 `DataIntegrityViolationException` → `PART-409-DUPLICATE` 매핑
+
+```java
+try {
+    saved = participationRepository.save(participation);
+} catch (DataIntegrityViolationException ex) {
+    throw new BusinessException(ErrorCode.PARTICIPATION_DUPLICATE);
+}
+```
+
+#### cancelParticipation() - 참여 취소
+
+```
+PESSIMISTIC_WRITE로 조회 → 상태 전이
+```
+
+**흐름:**
+1. `findByMeetupIdAndUserIdForUpdate()` - 비관적 락으로 본인 참여 조회
+2. `participation.cancel()` - REQUESTED/APPROVED → CANCELLED 전이
+
+**허용 전이:** REQUESTED → CANCELLED, APPROVED → CANCELLED
+
+#### getMyParticipation() - 본인 상태 조회
+
+**흐름:**
+1. `findByMeetupIdAndUserId()` - 락 없이 조회 (읽기 전용)
+2. `toResponse()` - DTO 변환
+
+#### approveParticipation() - 승인 (동시성 제어 핵심)
+
+```
+비관적 락 순서: 모임 락 → 참여 락 → 정원 검증 → 상태 전이
+```
+
+**흐름:**
+1. `meetupRepository.findByIdForUpdate(meetupId)` - **모임에 비관적 락 획득** (정원 제어 핵심)
+2. `validateOrganizer(meetup, organizerId)` - 주최자 권한 검증 → AUTH-403
+3. `validateMeetupOpenForParticipation(meetup)` - 모임 상태/마감일 검증
+4. `getParticipationForUpdateOrThrow(participationId)` - **참여에 비관적 락 획득**
+5. `belongsToMeetup(meetupId)` - 참여가 해당 모임 소속인지 확인
+6. `isStatus(REQUESTED)` - REQUESTED 상태만 승인 가능
+7. `validateCapacity(meetup)` - 정원 초과 확인 → PART-409-CAPACITY
+8. `participation.approve()` - APPROVED로 전이
+
+**락 획득 순서의 중요성:**
+모임 락을 먼저 획득하여 동일 모임의 동시 승인 요청을 직렬화한다.
+이를 통해 정원 초과를 원천 방지한다 (AC-PART-02).
+
+#### rejectParticipation() - 거절
+
+```
+참여에만 락 (정원 무관)
+```
+
+**흐름:**
+1. `getMeetupOrThrow(meetupId)` - 모임 조회 (락 없음)
+2. `validateOrganizer(meetup, organizerId)` - 주최자 권한 검증
+3. `getParticipationForUpdateOrThrow(participationId)` - 참여에 비관적 락
+4. `belongsToMeetup(meetupId)` - 소속 확인
+5. `participation.reject()` - REJECTED로 전이
+
+거절은 정원과 무관하므로 모임 락이 불필요하다.
+
+#### getParticipations() - 주최자 목록
+
+**흐름:**
+1. `getMeetupOrThrow(meetupId)` - 모임 조회
+2. `validateOrganizer(meetup, organizerId)` - 주최자 권한 검증
+3. `findByMeetupIdOrderByCreatedAtAsc()` - 참여 목록 조회
+4. **배치 사용자 조회** - N+1 방지
+
+```java
+List<Long> userIds = participations.stream()
+    .map(Participation::getUserId)
+    .distinct()
+    .toList();
+
+Map<Long, String> userNicknameMap = userRepository.findAllById(userIds).stream()
+    .collect(Collectors.toMap(User::getId, User::getNickname));
+```
 
 파일:
 - `src/main/java/io/heygw44/strive/domain/participation/service/ParticipationService.java`
 
-### 12.5 ParticipationController
-- `POST /api/meetups/{meetupId}/participations`: 참여 신청
-- `DELETE /api/meetups/{meetupId}/participations/me`: 본인 참여 취소
-- `PATCH /api/meetups/{meetupId}/participations/{participationId}/approve`: 주최자 승인
-- `PATCH /api/meetups/{meetupId}/participations/{participationId}/reject`: 주최자 거절
-- `GET /api/meetups/{meetupId}/participations`: 주최자 참여 목록 조회
+### 12.6 컨트롤러 상세
+
+| 엔드포인트 | 메서드 | 설명 | AC |
+|-----------|--------|------|-----|
+| `POST /api/meetups/{meetupId}/participations` | `requestParticipation` | 참여 신청 | AC-PART-01, AC-MEETUP-03 |
+| `DELETE /api/meetups/{meetupId}/participations/me` | `cancelParticipation` | 본인 취소 | AC-PART-03, AC-PART-04 |
+| `GET /api/meetups/{meetupId}/participations/me` | `getMyParticipation` | 본인 상태 | - |
+| `PATCH /api/meetups/{meetupId}/participations/{pid}/approve` | `approveParticipation` | 주최자 승인 | AC-AUTH-03, AC-PART-02 |
+| `PATCH /api/meetups/{meetupId}/participations/{pid}/reject` | `rejectParticipation` | 주최자 거절 | AC-AUTH-03, AC-PART-04 |
+| `GET /api/meetups/{meetupId}/participations` | `getParticipations` | 주최자 목록 | AC-AUTH-03 |
+
+**`@AuthenticationPrincipal` 사용 패턴:**
+
+```java
+@PostMapping
+public ResponseEntity<ApiResponse<ParticipationResponse>> requestParticipation(
+        @PathVariable Long meetupId,
+        @AuthenticationPrincipal CustomUserDetails userDetails) {
+
+    ParticipationResponse response = participationService.requestParticipation(
+        meetupId, userDetails.getUserId());  // 인증된 사용자 ID 추출
+    // ...
+}
+```
 
 파일:
 - `src/main/java/io/heygw44/strive/domain/participation/controller/ParticipationController.java`
@@ -466,10 +704,120 @@ sequenceDiagram
     Client->>ParticipationController: POST /api/meetups/{id}/participations
     ParticipationController->>ParticipationService: requestParticipation(meetupId, userId)
     ParticipationService->>MeetupRepo: findByIdAndDeletedAtIsNull(meetupId)
+    ParticipationService->>ParticipationService: validateMeetupOpenForParticipation()
     ParticipationService->>ParticipationRepo: existsByMeetupIdAndUserId(...)
     ParticipationService->>ParticipationRepo: save(participation)
+    Note over ParticipationRepo: UNIQUE 제약 위반 시<br/>PART-409-DUPLICATE
     ParticipationService-->>ParticipationController: ParticipationResponse
     ParticipationController-->>Client: 201 Created + ApiResponse
+```
+
+### 참여 취소
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant ParticipationController
+    participant ParticipationService
+    participant ParticipationRepo
+    participant Participation
+    Client->>ParticipationController: DELETE /api/meetups/{id}/participations/me
+    ParticipationController->>ParticipationService: cancelParticipation(meetupId, userId)
+    ParticipationService->>ParticipationRepo: findByMeetupIdAndUserIdForUpdate(...)
+    Note over ParticipationRepo: PESSIMISTIC_WRITE<br/>SELECT ... FOR UPDATE
+    ParticipationRepo-->>ParticipationService: Participation (locked)
+    ParticipationService->>Participation: cancel()
+    Note over Participation: REQUESTED/APPROVED → CANCELLED
+    ParticipationService-->>ParticipationController: void
+    ParticipationController-->>Client: 204 No Content
+```
+
+### 참여 승인 (동시성 제어)
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant ParticipationController
+    participant ParticipationService
+    participant MeetupRepo
+    participant ParticipationRepo
+    participant Participation
+    Client->>ParticipationController: PATCH /api/meetups/{id}/participations/{pid}/approve
+    ParticipationController->>ParticipationService: approveParticipation(meetupId, participationId, organizerId)
+    ParticipationService->>MeetupRepo: findByIdForUpdate(meetupId)
+    Note over MeetupRepo: PESSIMISTIC_WRITE<br/>모임 락 획득 (정원 제어)
+    MeetupRepo-->>ParticipationService: Meetup (locked)
+    ParticipationService->>ParticipationService: validateOrganizer() / validateMeetupOpenForParticipation()
+    ParticipationService->>ParticipationRepo: findByIdForUpdate(participationId)
+    Note over ParticipationRepo: PESSIMISTIC_WRITE<br/>참여 락 획득
+    ParticipationRepo-->>ParticipationService: Participation (locked)
+    ParticipationService->>ParticipationService: isStatus(REQUESTED) 검증
+    ParticipationService->>ParticipationRepo: countByMeetupIdAndStatus(APPROVED)
+    ParticipationService->>ParticipationService: validateCapacity()
+    ParticipationService->>Participation: approve()
+    Note over Participation: REQUESTED → APPROVED
+    ParticipationService-->>ParticipationController: ParticipationResponse
+    ParticipationController-->>Client: 200 OK + ApiResponse
+```
+
+### 참여 거절
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant ParticipationController
+    participant ParticipationService
+    participant MeetupRepo
+    participant ParticipationRepo
+    participant Participation
+    Client->>ParticipationController: PATCH /api/meetups/{id}/participations/{pid}/reject
+    ParticipationController->>ParticipationService: rejectParticipation(meetupId, participationId, organizerId)
+    ParticipationService->>MeetupRepo: findByIdAndDeletedAtIsNull(meetupId)
+    Note over MeetupRepo: 락 없음 (정원 무관)
+    ParticipationService->>ParticipationService: validateOrganizer()
+    ParticipationService->>ParticipationRepo: findByIdForUpdate(participationId)
+    Note over ParticipationRepo: PESSIMISTIC_WRITE<br/>상태 경합 방지
+    ParticipationService->>Participation: reject()
+    Note over Participation: REQUESTED → REJECTED
+    ParticipationService-->>ParticipationController: ParticipationResponse
+    ParticipationController-->>Client: 200 OK + ApiResponse
+```
+
+### 본인 참여 상태 조회
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant ParticipationController
+    participant ParticipationService
+    participant ParticipationRepo
+    Client->>ParticipationController: GET /api/meetups/{id}/participations/me
+    ParticipationController->>ParticipationService: getMyParticipation(meetupId, userId)
+    ParticipationService->>ParticipationRepo: findByMeetupIdAndUserId(...)
+    Note over ParticipationRepo: 락 없음 (읽기 전용)
+    ParticipationService-->>ParticipationController: ParticipationResponse
+    ParticipationController-->>Client: 200 OK + ApiResponse
+```
+
+### 주최자 참여 목록 조회
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant ParticipationController
+    participant ParticipationService
+    participant MeetupRepo
+    participant ParticipationRepo
+    participant UserRepo
+    Client->>ParticipationController: GET /api/meetups/{id}/participations
+    ParticipationController->>ParticipationService: getParticipations(meetupId, organizerId)
+    ParticipationService->>MeetupRepo: findByIdAndDeletedAtIsNull(meetupId)
+    ParticipationService->>ParticipationService: validateOrganizer()
+    ParticipationService->>ParticipationRepo: findByMeetupIdOrderByCreatedAtAsc(...)
+    ParticipationService->>UserRepo: findAllById(userIds)
+    Note over UserRepo: 배치 조회로 N+1 방지
+    ParticipationService-->>ParticipationController: ParticipationListResponse
+    ParticipationController-->>Client: 200 OK + ApiResponse
 ```
 
 ---
@@ -499,6 +847,7 @@ sequenceDiagram
 | --- | --- | --- | --- | --- |
 | POST `/api/meetups/{id}/participations` | 필요 | 없음 | ParticipationResponse | AUTH-401, RES-404, MEETUP-409-STATE, MEETUP-409-DEADLINE, PART-409-DUPLICATE |
 | DELETE `/api/meetups/{id}/participations/me` | 필요 | 없음 | 204 No Content | AUTH-401, RES-404, PART-409-STATE |
+| GET `/api/meetups/{id}/participations/me` | 필요 | 없음 | ParticipationResponse | AUTH-401, RES-404 |
 | PATCH `/api/meetups/{id}/participations/{pid}/approve` | 필요 | 없음 | ParticipationResponse | AUTH-401, AUTH-403, RES-404, MEETUP-409-STATE, MEETUP-409-DEADLINE, PART-409-CAPACITY, PART-409-STATE |
 | PATCH `/api/meetups/{id}/participations/{pid}/reject` | 필요 | 없음 | ParticipationResponse | AUTH-401, AUTH-403, RES-404, PART-409-STATE |
 | GET `/api/meetups/{id}/participations` | 필요 | 없음 | ParticipationListResponse | AUTH-401, AUTH-403, RES-404 |
@@ -686,6 +1035,7 @@ X-CSRF-TOKEN: ...
     "endAt": "2026-02-07T11:00:00",
     "recruitEndAt": "2026-02-06T23:59:00",
     "capacity": 10,
+    "approvedCount": 0,
     "status": "DRAFT",
     "experienceLevelText": "초보자 환영",
     "createdAt": "2026-01-31T10:00:00",
@@ -762,6 +1112,7 @@ X-CSRF-TOKEN: ...
     "endAt": "2026-02-07T11:00:00",
     "recruitEndAt": "2026-02-06T23:59:00",
     "capacity": 10,
+    "approvedCount": 0,
     "status": "OPEN",
     "experienceLevelText": "초보자 환영",
     "createdAt": "2026-01-31T10:00:00",
@@ -782,6 +1133,261 @@ X-CSRF-TOKEN: ...
 응답:
 ```http
 204 No Content
+```
+
+### 참여 신청 (성공)
+요청:
+```http
+POST /api/meetups/1/participations
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답:
+```json
+{
+  "data": {
+    "id": 1,
+    "meetupId": 1,
+    "userId": 2,
+    "userNickname": "participant1",
+    "status": "REQUESTED",
+    "createdAt": "2026-02-01T10:00:00",
+    "updatedAt": "2026-02-01T10:00:00"
+  },
+  "traceId": "..."
+}
+```
+
+### 참여 신청 (실패 - 중복)
+요청:
+```http
+POST /api/meetups/1/participations
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답:
+```json
+{
+  "code": "PART-409-DUPLICATE",
+  "message": "이미 신청한 모임입니다",
+  "traceId": "...",
+  "fieldErrors": null
+}
+```
+
+### 참여 신청 (실패 - 모집 마감)
+요청:
+```http
+POST /api/meetups/1/participations
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답:
+```json
+{
+  "code": "MEETUP-409-DEADLINE",
+  "message": "모집 마감 이후입니다",
+  "traceId": "...",
+  "fieldErrors": null
+}
+```
+
+### 참여 취소 (성공)
+요청:
+```http
+DELETE /api/meetups/1/participations/me
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답:
+```http
+204 No Content
+```
+
+### 참여 취소 (실패 - 상태 전이 불가)
+요청:
+```http
+DELETE /api/meetups/1/participations/me
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답 (이미 REJECTED 또는 CANCELLED 상태인 경우):
+```json
+{
+  "code": "PART-409-STATE",
+  "message": "허용되지 않는 참가 상태입니다",
+  "traceId": "...",
+  "fieldErrors": null
+}
+```
+
+### 본인 참여 상태 조회
+요청:
+```http
+GET /api/meetups/1/participations/me
+Cookie: JSESSIONID=...
+```
+
+응답:
+```json
+{
+  "data": {
+    "id": 1,
+    "meetupId": 1,
+    "userId": 2,
+    "userNickname": "participant1",
+    "status": "APPROVED",
+    "createdAt": "2026-02-01T10:00:00",
+    "updatedAt": "2026-02-01T11:00:00"
+  },
+  "traceId": "..."
+}
+```
+
+### 참여 승인 (성공)
+요청:
+```http
+PATCH /api/meetups/1/participations/1/approve
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답:
+```json
+{
+  "data": {
+    "id": 1,
+    "meetupId": 1,
+    "userId": 2,
+    "userNickname": "participant1",
+    "status": "APPROVED",
+    "createdAt": "2026-02-01T10:00:00",
+    "updatedAt": "2026-02-01T11:00:00"
+  },
+  "traceId": "..."
+}
+```
+
+### 참여 승인 (실패 - 정원 초과)
+요청:
+```http
+PATCH /api/meetups/1/participations/11/approve
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답:
+```json
+{
+  "code": "PART-409-CAPACITY",
+  "message": "정원이 초과되었습니다",
+  "traceId": "...",
+  "fieldErrors": null
+}
+```
+
+### 참여 승인 (실패 - 권한 없음)
+요청 (주최자가 아닌 사용자가 요청):
+```http
+PATCH /api/meetups/1/participations/1/approve
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답:
+```json
+{
+  "code": "AUTH-403",
+  "message": "권한이 없습니다",
+  "traceId": "...",
+  "fieldErrors": null
+}
+```
+
+### 참여 거절 (성공)
+요청:
+```http
+PATCH /api/meetups/1/participations/1/reject
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답:
+```json
+{
+  "data": {
+    "id": 1,
+    "meetupId": 1,
+    "userId": 2,
+    "userNickname": "participant1",
+    "status": "REJECTED",
+    "createdAt": "2026-02-01T10:00:00",
+    "updatedAt": "2026-02-01T11:00:00"
+  },
+  "traceId": "..."
+}
+```
+
+### 참여 거절 (실패 - 상태 전이 불가)
+요청 (이미 APPROVED 상태인 참여):
+```http
+PATCH /api/meetups/1/participations/1/reject
+Cookie: JSESSIONID=...
+X-CSRF-TOKEN: ...
+```
+
+응답:
+```json
+{
+  "code": "PART-409-STATE",
+  "message": "허용되지 않는 참가 상태입니다",
+  "traceId": "...",
+  "fieldErrors": null
+}
+```
+
+### 주최자 참여 목록 조회
+요청:
+```http
+GET /api/meetups/1/participations
+Cookie: JSESSIONID=...
+```
+
+응답:
+```json
+{
+  "data": {
+    "participations": [
+      {
+        "id": 1,
+        "meetupId": 1,
+        "userId": 2,
+        "userNickname": "participant1",
+        "status": "APPROVED",
+        "createdAt": "2026-02-01T10:00:00",
+        "updatedAt": "2026-02-01T11:00:00"
+      },
+      {
+        "id": 2,
+        "meetupId": 1,
+        "userId": 3,
+        "userNickname": "participant2",
+        "status": "REQUESTED",
+        "createdAt": "2026-02-01T10:30:00",
+        "updatedAt": "2026-02-01T10:30:00"
+      }
+    ],
+    "totalCount": 2,
+    "approvedCount": 1,
+    "capacity": 10
+  },
+  "traceId": "..."
+}
 ```
 
 ---
@@ -843,6 +1449,8 @@ Mockito 기반 서비스 테스트.
 - 2026-02-01 16:50:34 (로컬) `./gradlew test --tests io.heygw44.strive.domain.participation.service.ParticipationConcurrencyTest` 성공
 - 2026-02-01 17:04:41 (로컬) `./gradlew test` 성공
 - 2026-02-01 (로컬) `./gradlew build` 성공
+- 2026-02-01 18:47:11 (로컬) `./gradlew test` 성공
+- 2026-02-01 19:01:54 (로컬) `./gradlew test` 성공
 
 ---
 
@@ -881,11 +1489,151 @@ Mockito 기반 서비스 테스트.
 
 ---
 
-## 19) 다음에 확장될 가능성이 높은 포인트
+## 19) 동시성 제어 전략 (M3 참여 도메인)
 
-- 승인 동시성 강화 (AC-PART-02 동시 승인 테스트, 락/버전 전략 검증)
-- 이메일 인증: 실 운영에서는 토큰을 URL로 전달하고, 인증 엔드포인트 공개 필요 가능성
+참여 도메인에서는 세 가지 동시성 제어 메커니즘을 조합하여 데이터 정합성을 보장한다.
+
+### 19.1 비관적 락 (PESSIMISTIC_WRITE)
+
+```java
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+@Query("select m from Meetup m where m.id = :id and m.deletedAt is null")
+Optional<Meetup> findByIdForUpdate(@Param("id") Long id);
+```
+
+**사용처:**
+
+| 메서드 | 락 대상 | 목적 |
+|--------|---------|------|
+| `approveParticipation()` | Meetup → Participation | 정원 초과 방지 (AC-PART-02) |
+| `cancelParticipation()` | Participation | 상태 경합 방지 |
+| `rejectParticipation()` | Participation | 상태 경합 방지 |
+
+**승인 시 락 획득 순서:**
+```
+1. meetupRepository.findByIdForUpdate(meetupId)  // 모임 락
+2. participationRepository.findByIdForUpdate(participationId)  // 참여 락
+```
+
+모임 락을 먼저 획득하여 동일 모임에 대한 동시 승인 요청을 직렬화한다.
+이로써 정원 카운트(`countByMeetupIdAndStatus`)와 실제 승인 사이에 다른 트랜잭션이 끼어드는 것을 방지한다.
+
+### 19.2 UNIQUE 제약 + 예외 매핑
+
+```java
+@Table(uniqueConstraints = @UniqueConstraint(
+    name = "uk_participation_meetup_user",
+    columnNames = {"meetup_id", "user_id"}
+))
+```
+
+**중복 신청 동시성 처리:**
+1. 선 체크: `existsByMeetupIdAndUserId()`로 사전 검증 (대부분 케이스 처리)
+2. 후 제약: 동시 요청 시 UNIQUE 제약 위반 → `DataIntegrityViolationException`
+3. 예외 매핑: `PART-409-DUPLICATE`로 일관된 응답
+
+```java
+try {
+    saved = participationRepository.save(participation);
+} catch (DataIntegrityViolationException ex) {
+    throw new BusinessException(ErrorCode.PARTICIPATION_DUPLICATE);
+}
+```
+
+**장점:**
+- 락 없이 경쟁 조건 해결
+- DB 레벨 제약으로 확실한 보장
+- 성능 영향 최소화 (대부분 선 체크에서 걸러짐)
+
+### 19.3 @Version 낙관적 락
+
+```java
+@Entity
+public class Participation {
+    @Version
+    private Integer version;
+    // ...
+}
+```
+
+**역할:**
+- JPA가 자동으로 버전 관리
+- UPDATE 시 `WHERE ... AND version = ?` 조건 추가
+- 변경 충돌 시 `OptimisticLockException` 발생
+
+**현재 위치:**
+보조적 역할로 사용. 비관적 락이 메인 전략이므로 낙관적 락 충돌은 드물게 발생한다.
+향후 락 전략 변경 시 주요 메커니즘으로 전환 가능하다.
+
+### 19.4 동시성 제어 흐름도
+
+```mermaid
+flowchart TB
+    subgraph 신청 동시성
+        A[동시 신청 요청] --> B{existsByMeetupIdAndUserId?}
+        B -->|존재| C[PART-409-DUPLICATE]
+        B -->|미존재| D[INSERT 시도]
+        D -->|UNIQUE 위반| E[DataIntegrityViolationException]
+        E --> C
+        D -->|성공| F[REQUESTED 생성]
+    end
+
+    subgraph 승인 동시성
+        G[동시 승인 요청] --> H[모임 락 대기]
+        H --> I[모임 락 획득]
+        I --> J[참여 락 대기]
+        J --> K[참여 락 획득]
+        K --> L{정원 >= APPROVED count?}
+        L -->|초과| M[PART-409-CAPACITY]
+        L -->|여유| N[APPROVED 전이]
+        N --> O[트랜잭션 커밋 & 락 해제]
+        O --> P[다음 요청 처리]
+    end
+```
+
+### 19.5 AC-PART-02 동시성 테스트
+
+```java
+@Test
+@DisplayName("AC-PART-02: 정원 10명에 100명 동시 승인 → 최대 10명 APPROVED")
+void approveParticipation_concurrent_shouldLimitToCapacity() throws Exception {
+    // Given: capacity=10인 모임, 100명의 REQUESTED 참가자
+    Meetup meetup = createMeetupWithCapacity(10);
+    List<Participation> participations = createParticipations(meetup, 100);
+
+    // When: 100개의 동시 승인 요청
+    ExecutorService executor = Executors.newFixedThreadPool(20);
+    CountDownLatch latch = new CountDownLatch(100);
+
+    for (Participation p : participations) {
+        executor.submit(() -> {
+            try {
+                participationService.approve(meetup.getId(), p.getId(), organizerId);
+            } catch (BusinessException e) {
+                // PART-409-CAPACITY 예상
+            } finally {
+                latch.countDown();
+            }
+        });
+    }
+    latch.await();
+
+    // Then: APPROVED는 정확히 10명
+    long approvedCount = participationRepository
+        .countByMeetupIdAndStatus(meetup.getId(), ParticipationStatus.APPROVED);
+    assertThat(approvedCount).isEqualTo(10);
+}
+```
 
 ---
 
-필요하면 이 문서를 기반으로 **더 세부 설계 문서(시퀀스 다이어그램, 상태 전이, API 스펙)**까지 확장해줄 수 있다.
+## 20) 다음에 확장될 가능성이 높은 포인트
+
+- 승인 동시성 통합 테스트 (AC-PART-02 대규모 동시 승인)
+- 이메일 인증: 실 운영에서는 토큰을 URL로 전달하고, 인증 엔드포인트 공개 필요 가능성
+- 성능 튜닝: 목록 조회 p95 300ms 목표 (M5)
+
+---
+
+**문서 최종 갱신: 2026-02-01**
+필요하면 이 문서를 기반으로 **더 세부 설계 문서**까지 확장할 수 있다.

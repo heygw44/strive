@@ -46,6 +46,9 @@ public class Participation {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    @Version
+    private Integer version;
+
     private Participation(Long meetupId, Long userId) {
         this.meetupId = meetupId;
         this.userId = userId;
