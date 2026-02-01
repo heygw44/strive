@@ -1,6 +1,6 @@
 # Strive 코드베이스 가이드 (현재 구현 범위)
 
-이 문서는 **현재까지 구현된 범위(M0/M2)**의 주요 코드가 **어떻게 동작하고 왜 이렇게 작성되었는지**를 설명한다.  
+이 문서는 **현재까지 구현된 범위(M0/M2/M3)**의 주요 코드가 **어떻게 동작하고 왜 이렇게 작성되었는지**를 설명한다.  
 패키지 구조, 요청 흐름, 예외/응답 규격, 보안 설정, 테스트 구성까지 정리한다.
 
 ---
@@ -12,7 +12,8 @@ io.heygw44.strive
 ├── StriveApplication              # Spring Boot 엔트리포인트
 ├── domain
 │   ├── user                       # 사용자/인증/프로필 도메인
-│   └── meetup                     # 모임 CRUD/조회 도메인
+│   ├── meetup                     # 모임 CRUD/조회 도메인
+│   └── participation              # 참여(신청/취소/승인/거절) 도메인
 ├── global
 │   ├── config                     # 보안/스프링 설정
 │   ├── exception                  # 예외 코드/핸들러
@@ -99,7 +100,9 @@ Spring Security의 핵심 정책을 정의한다.
 - 인가:
   - `/api/auth/signup`, `/api/auth/login` 공개
   - `/api/me/**`, `/api/auth/logout`, `/api/auth/verify-email/**`는 인증 필요
-  - `/api/meetups/**`, `/api/participations/**`는 메소드별 인증 요구
+  - `/api/meetups/**`는 메소드별 인증 요구
+  - 참여 API는 `/api/meetups/{meetupId}/participations` 경로 사용
+  - 참여 목록 조회(GET)는 인증 필요, 나머지는 `/api/meetups/**` 정책으로 커버
 - 인증 실패 시 401로 응답
 
 파일: `src/main/java/io/heygw44/strive/global/config/SecurityConfig.java`
@@ -258,7 +261,52 @@ JPA 기반 저장/조회 인터페이스.
 
 ---
 
-## 12) API 시퀀스 다이어그램
+## 12) 참여 도메인 (M3)
+
+### 12.1 엔티티/상태
+- `Participation`은 참여 신청/승인/거절/취소 상태를 관리한다.
+- `(meetup_id, user_id)` 유니크 제약으로 중복 신청을 차단한다.
+- `ParticipationStatus`의 전이 규칙만 허용한다.
+
+파일:
+- `src/main/java/io/heygw44/strive/domain/participation/entity/Participation.java`
+- `src/main/java/io/heygw44/strive/domain/participation/entity/ParticipationStatus.java`
+
+### 12.2 Repository
+- `ParticipationRepository`: 중복 신청 확인, 본인 참여 조회, 승인 카운트, 목록 조회
+
+파일:
+- `src/main/java/io/heygw44/strive/domain/participation/repository/ParticipationRepository.java`
+
+### 12.3 DTO (응답)
+- `ParticipationResponse`: 단건 응답
+- `ParticipationListResponse`: 주최자용 목록 응답
+
+파일:
+- `src/main/java/io/heygw44/strive/domain/participation/dto/ParticipationResponse.java`
+- `src/main/java/io/heygw44/strive/domain/participation/dto/ParticipationListResponse.java`
+
+### 12.4 서비스
+- `ParticipationService`: 신청/취소/승인/거절/목록 조회 규칙 담당
+- 동시성 중복 신청 시 `DataIntegrityViolationException`을 `PART-409-DUPLICATE`로 매핑
+- 승인 시 `findByIdForUpdate`로 정원 동시성 제어, 상태 검증 후 정원 체크
+
+파일:
+- `src/main/java/io/heygw44/strive/domain/participation/service/ParticipationService.java`
+
+### 12.5 ParticipationController
+- `POST /api/meetups/{meetupId}/participations`: 참여 신청
+- `DELETE /api/meetups/{meetupId}/participations/me`: 본인 참여 취소
+- `PATCH /api/meetups/{meetupId}/participations/{participationId}/approve`: 주최자 승인
+- `PATCH /api/meetups/{meetupId}/participations/{participationId}/reject`: 주최자 거절
+- `GET /api/meetups/{meetupId}/participations`: 주최자 참여 목록 조회
+
+파일:
+- `src/main/java/io/heygw44/strive/domain/participation/controller/ParticipationController.java`
+
+---
+
+## 13) API 시퀀스 다이어그램
 
 ### 로그인
 ```mermaid
@@ -406,9 +454,27 @@ sequenceDiagram
     MeetupController-->>Client: 204 No Content
 ```
 
+### 참여 신청
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant ParticipationController
+    participant ParticipationService
+    participant MeetupRepo
+    participant ParticipationRepo
+    Client->>ParticipationController: POST /api/meetups/{id}/participations
+    ParticipationController->>ParticipationService: requestParticipation(meetupId, userId)
+    ParticipationService->>MeetupRepo: findByIdAndDeletedAtIsNull(meetupId)
+    ParticipationService->>ParticipationRepo: existsByMeetupIdAndUserId(...)
+    ParticipationService->>ParticipationRepo: save(participation)
+    ParticipationService-->>ParticipationController: ParticipationResponse
+    ParticipationController-->>Client: 201 Created + ApiResponse
+```
+
 ---
 
-## 13) API 요청/응답 예시
+## 14) API 요청/응답 예시
 
 ### 모임 API 스펙 요약 (M2)
 
@@ -426,6 +492,16 @@ sequenceDiagram
 - AUTH-401: 인증되지 않은 요청
 - AUTH-403: 작성자 권한 위반
 - MEETUP-409-STATE: 허용되지 않는 상태 전이 또는 비-OPEN에서 필드 수정
+
+### 참여 API 스펙 요약 (M3)
+
+| API | 인증 | 요청 바디 | 응답 | 주요 에러 |
+| --- | --- | --- | --- | --- |
+| POST `/api/meetups/{id}/participations` | 필요 | 없음 | ParticipationResponse | AUTH-401, RES-404, MEETUP-409-STATE, MEETUP-409-DEADLINE, PART-409-DUPLICATE |
+| DELETE `/api/meetups/{id}/participations/me` | 필요 | 없음 | 204 No Content | AUTH-401, RES-404, PART-409-STATE |
+| PATCH `/api/meetups/{id}/participations/{pid}/approve` | 필요 | 없음 | ParticipationResponse | AUTH-401, AUTH-403, RES-404, MEETUP-409-STATE, MEETUP-409-DEADLINE, PART-409-CAPACITY, PART-409-STATE |
+| PATCH `/api/meetups/{id}/participations/{pid}/reject` | 필요 | 없음 | ParticipationResponse | AUTH-401, AUTH-403, RES-404, PART-409-STATE |
+| GET `/api/meetups/{id}/participations` | 필요 | 없음 | ParticipationListResponse | AUTH-401, AUTH-403, RES-404 |
 
 ### 회원가입
 요청:
@@ -710,7 +786,7 @@ X-CSRF-TOKEN: ...
 
 ---
 
-## 14) 보안용 사용자 정보
+## 15) 보안용 사용자 정보
 
 ### `CustomUserDetails`
 Spring Security가 사용하는 사용자 모델.  
@@ -725,13 +801,14 @@ Spring Security가 사용하는 사용자 모델.
 
 ---
 
-## 15) 테스트 구성
+## 16) 테스트 구성
 
 ### 통합 테스트
 Spring Boot + MockMvc 기반.
 - `AuthIntegrationTest`: 로그인/세션 재발급/CSRF/401/토큰 형식 검증
 - `ProfileIntegrationTest`: 프로필 조회/수정/중복 닉네임 검증
 - `MeetupIntegrationTest`: 모임 CRUD/필터/권한/상태 전이 검증
+- `ParticipationIntegrationTest`: 참여 신청/취소/승인/거절/권한/정원 검증
 - `GlobalExceptionHandlerTest`: 검증/비즈니스 예외 응답 확인
 - `TraceIdFilterTest`: TraceId 생성/반환 확인
 
@@ -739,6 +816,7 @@ Spring Boot + MockMvc 기반.
 - `src/test/java/io/heygw44/strive/domain/user/controller/AuthIntegrationTest.java`
 - `src/test/java/io/heygw44/strive/domain/user/controller/ProfileIntegrationTest.java`
 - `src/test/java/io/heygw44/strive/domain/meetup/controller/MeetupIntegrationTest.java`
+- `src/test/java/io/heygw44/strive/domain/participation/controller/ParticipationIntegrationTest.java`
 - `src/test/java/io/heygw44/strive/global/exception/GlobalExceptionHandlerTest.java`
 - `src/test/java/io/heygw44/strive/global/filter/TraceIdFilterTest.java`
 
@@ -747,15 +825,28 @@ Mockito 기반 서비스 테스트.
 - `AuthServiceTest`: 회원가입/로그인/토큰 요청 검증
 - `MeetupServiceTest`: 모임 생성/수정/삭제 도메인 규칙 검증
 - `MeetupStatusTest`: 상태 전이 규칙 검증
+- `ParticipationStatusTest`: 참여 상태 전이 규칙 검증
 
 파일:
 - `src/test/java/io/heygw44/strive/domain/user/service/AuthServiceTest.java`
 - `src/test/java/io/heygw44/strive/domain/meetup/service/MeetupServiceTest.java`
 - `src/test/java/io/heygw44/strive/domain/meetup/entity/MeetupStatusTest.java`
+- `src/test/java/io/heygw44/strive/domain/participation/entity/ParticipationStatusTest.java`
+
+### 동시성 테스트
+- `ParticipationConcurrencyTest`: 동일 사용자 동시 신청 시 1건 성공 + 중복 매핑 검증
+
+파일:
+- `src/test/java/io/heygw44/strive/domain/participation/service/ParticipationConcurrencyTest.java`
+
+### 최근 테스트 실행 기록
+- 2026-02-01 16:50:34 (로컬) `./gradlew test --tests io.heygw44.strive.domain.participation.service.ParticipationConcurrencyTest` 성공
+- 2026-02-01 17:04:41 (로컬) `./gradlew test` 성공
+- 2026-02-01 (로컬) `./gradlew build` 성공
 
 ---
 
-## 16) 환경 설정
+## 17) 환경 설정
 
 ### `application.yaml`
 기본 공통 설정.
@@ -775,7 +866,7 @@ Mockito 기반 서비스 테스트.
 
 ---
 
-## 17) 개발 관점 요약 (왜 이렇게 작성했나)
+## 18) 개발 관점 요약 (왜 이렇게 작성했나)
 
 1) **컨트롤러 얇게, 서비스에 규칙 집중**
    - 테스트와 유지보수에 유리.
@@ -790,11 +881,9 @@ Mockito 기반 서비스 테스트.
 
 ---
 
-## 18) 다음에 확장될 가능성이 높은 포인트
+## 19) 다음에 확장될 가능성이 높은 포인트
 
-- Participation 도메인 추가 시:
-  - 정원/승인 동시성 처리 (락/버전)
-  - 권한/상태 전이 ErrorCode 확장
+- 승인 동시성 강화 (AC-PART-02 동시 승인 테스트, 락/버전 전략 검증)
 - 이메일 인증: 실 운영에서는 토큰을 URL로 전달하고, 인증 엔드포인트 공개 필요 가능성
 
 ---
