@@ -1,6 +1,6 @@
 # Strive 코드베이스 가이드 (현재 구현 범위)
 
-이 문서는 **현재까지 구현된 범위(M0/M2/M3)**의 주요 코드가 **어떻게 동작하고 왜 이렇게 작성되었는지**를 설명한다.  
+이 문서는 **현재까지 구현된 범위(M0/M2/M3/M4)**의 주요 코드가 **어떻게 동작하고 왜 이렇게 작성되었는지**를 설명한다.
 패키지 구조, 요청 흐름, 예외/응답 규격, 보안 설정, 테스트 구성까지 정리한다.
 
 ---
@@ -1475,11 +1475,24 @@ Mockito 기반 서비스 테스트.
 - `src/test/java/io/heygw44/strive/domain/meetup/entity/MeetupStatusTest.java`
 - `src/test/java/io/heygw44/strive/domain/participation/entity/ParticipationStatusTest.java`
 
-### 동시성 테스트
-- `ParticipationConcurrencyTest`: 동일 사용자 동시 신청 시 1건 성공 + 중복 매핑 검증
+### 동시성 테스트 (M4)
+- `ParticipationConcurrencyTest`: AC-PART-02/AC-PART-03 동시성 검증
+  - `requestParticipation_concurrent_duplicate`: 동일 사용자 동시 신청 시 1건 성공 + 중복 매핑 검증
+  - `approveParticipation_concurrent100Requests_maxApproved10`: **AC-PART-02** 정원 10명에 100명 동시 승인 → APPROVED 최대 10명
+  - `approveParticipation_variousCapacity_noOverflow`: 다양한 정원 크기(1/5/20)에서 동시 승인 검증
+  - `cancelAndApprove_concurrent_maintainsCapacityConsistency`: **AC-PART-03** 취소+승인 동시 발생 시 정원 일관성
 
 파일:
 - `src/test/java/io/heygw44/strive/domain/participation/service/ParticipationConcurrencyTest.java`
+
+**실행 명령어:**
+```bash
+# 전체 동시성 테스트
+./gradlew test --tests "*ParticipationConcurrencyTest"
+
+# AC-PART-02 테스트만
+./gradlew test --tests "*ParticipationConcurrencyTest.approveParticipation_concurrent100Requests_maxApproved10"
+```
 
 ### 최근 테스트 실행 기록
 - 2026-02-01 16:50:34 (로컬) `./gradlew test --tests io.heygw44.strive.domain.participation.service.ParticipationConcurrencyTest` 성공
@@ -1487,6 +1500,7 @@ Mockito 기반 서비스 테스트.
 - 2026-02-01 (로컬) `./gradlew build` 성공
 - 2026-02-01 18:47:11 (로컬) `./gradlew test` 성공
 - 2026-02-01 19:01:54 (로컬) `./gradlew test` 성공
+- **2026-02-02 19:14:09 (로컬) `./gradlew test --tests "*ParticipationConcurrencyTest"` 성공 (M4 동시성 테스트 3회 연속 통과)**
 
 ---
 
@@ -1630,49 +1644,84 @@ flowchart TB
     end
 ```
 
-### 19.5 AC-PART-02 동시성 테스트
+### 19.5 AC-PART-02 동시성 테스트 (M4 완료)
+
+**테스트 결과 요약:**
+
+| 정원 | 요청 수 | APPROVED | 정원초과 | 결과 |
+|------|---------|----------|----------|------|
+| 1 | 20 | 1 | 19 | **PASS** |
+| 5 | 50 | 5 | 45 | **PASS** |
+| 10 | 100 | 10 | 90 | **PASS** |
+| 20 | 50 | 20 | 30 | **PASS** |
+
+**핵심 테스트 코드:**
 
 ```java
 @Test
-@DisplayName("AC-PART-02: 정원 10명에 100명 동시 승인 → 최대 10명 APPROVED")
-void approveParticipation_concurrent_shouldLimitToCapacity() throws Exception {
+@DisplayName("AC-PART-02: 정원 10명에 100명 동시 승인 요청 시 정원 초과 0건")
+void approveParticipation_concurrent100Requests_maxApproved10() throws Exception {
     // Given: capacity=10인 모임, 100명의 REQUESTED 참가자
-    Meetup meetup = createMeetupWithCapacity(10);
-    List<Participation> participations = createParticipations(meetup, 100);
+    int capacity = 10;
+    int requestCount = 100;
+    int threadCount = requestCount; // 최대 동시성
+
+    Meetup testMeetup = createMeetupWithCapacity(capacity);
+    List<User> participants = createUsers(requestCount);
+    List<Participation> participations = createParticipations(testMeetup, participants);
 
     // When: 100개의 동시 승인 요청
-    ExecutorService executor = Executors.newFixedThreadPool(20);
-    CountDownLatch latch = new CountDownLatch(100);
+    AtomicInteger successCount = new AtomicInteger();
+    AtomicInteger capacityExceededCount = new AtomicInteger();
+    List<Runnable> tasks = new ArrayList<>(participations.size());
 
     for (Participation p : participations) {
-        executor.submit(() -> {
+        tasks.add(() -> {
             try {
-                participationService.approve(meetup.getId(), p.getId(), organizerId);
-            } catch (BusinessException e) {
-                // PART-409-CAPACITY 예상
-            } finally {
-                latch.countDown();
+                participationService.approveParticipation(
+                    testMeetup.getId(), p.getId(), organizer.getId());
+                successCount.incrementAndGet();
+            } catch (BusinessException ex) {
+                if (ex.getErrorCode() == ErrorCode.PARTICIPATION_CAPACITY_EXCEEDED) {
+                    capacityExceededCount.incrementAndGet();
+                    return;
+                }
+                throw ex;
             }
         });
     }
-    latch.await();
 
-    // Then: APPROVED는 정확히 10명
-    long approvedCount = participationRepository
-        .countByMeetupIdAndStatus(meetup.getId(), ParticipationStatus.APPROVED);
-    assertThat(approvedCount).isEqualTo(10);
+    ExecutionResult result = ConcurrencyTestHelper.runConcurrently(
+        tasks, threadCount, START_TIMEOUT, DONE_TIMEOUT);
+    result.logErrors(log);
+    assertThat(result.errors()).isEmpty();
+
+    // Then: APPROVED는 정확히 capacity만큼
+    long approvedCount = participationRepository.countByMeetupIdAndStatus(
+        testMeetup.getId(), ParticipationStatus.APPROVED);
+    assertThat(approvedCount).isEqualTo(capacity);
+    assertThat(successCount.get()).isEqualTo(capacity);
+    assertThat(capacityExceededCount.get()).isEqualTo(requestCount - capacity);
 }
 ```
+
+동시 시작/완료 동기화는 `ConcurrencyTestHelper`가 `ready/start/done` 래치를 관리해 **Thread.sleep 의존성을 제거**했다.
+
+**상세 결과 문서:** [docs/M4-concurrency-proof.md](M4-concurrency-proof.md)
 
 ---
 
 ## 20) 다음에 확장될 가능성이 높은 포인트
 
-- 승인 동시성 통합 테스트 (AC-PART-02 대규모 동시 승인)
+- ~~승인 동시성 통합 테스트 (AC-PART-02 대규모 동시 승인)~~ ✅ M4 완료
 - 이메일 인증: 실 운영에서는 토큰을 URL로 전달하고, 인증 엔드포인트 공개 필요 가능성
-- 성능 튜닝: 목록 조회 p95 300ms 목표 (M5)
+- **성능 튜닝 (M5)**: 목록 조회 p95 300ms 목표
+  - MySQL Docker 환경에서 동시성 테스트 재검증
+  - EXPLAIN 분석 및 인덱스 최적화
+  - MyBatis 전환 검토 (성능 병목 시)
+- **산출물 정리 (M6)**: 테스트/튜닝 근거 문서화, OpenAPI/README 정리
 
 ---
 
-**문서 최종 갱신: 2026-02-01**
+**문서 최종 갱신: 2026-02-02**
 필요하면 이 문서를 기반으로 **더 세부 설계 문서**까지 확장할 수 있다.
